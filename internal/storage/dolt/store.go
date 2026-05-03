@@ -1049,16 +1049,38 @@ func isLocalHost(host string) bool {
 
 // buildServerDSN constructs a MySQL DSN for connecting to a Dolt server.
 // If database is empty, connects without selecting a database (for init operations).
+//
+// For local connections, prefers Unix socket over TCP to avoid TIME_WAIT
+// accumulation: bd is spawned as a subprocess per command, so every TCP close
+// enters TIME_WAIT for 60s; with many concurrent agents this exhausts sockets.
+// Unix socket connections bypass TCP entirely — no TIME_WAIT.
 func buildServerDSN(cfg *Config, database string) string {
 	// go-sql-driver/mysql DSN format: user:password@tcp(host:port)/db?params
 	// The password must not contain unescaped special characters that collide
 	// with DSN delimiters (@ : / ?). Use go-sql-driver's Config.FormatDSN()
 	// which handles escaping correctly.
+	net := "tcp"
+	addr := fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.ServerPort)
+
+	// Prefer Unix socket for local connections (no TLS override, no remote host).
+	if !cfg.ServerTLS && isLocalHost(cfg.ServerHost) {
+		// Dolt uses port-specific socket when port != 3306, else /tmp/mysql.sock.
+		portSocket := fmt.Sprintf("/tmp/mysql.%d.sock", cfg.ServerPort)
+		defaultSocket := "/tmp/mysql.sock"
+		if _, err := os.Stat(portSocket); err == nil {
+			net = "unix"
+			addr = portSocket
+		} else if _, err := os.Stat(defaultSocket); err == nil {
+			net = "unix"
+			addr = defaultSocket
+		}
+	}
+
 	dsnCfg := mysql.Config{
 		User:                 cfg.ServerUser,
 		Passwd:               cfg.ServerPassword,
-		Net:                  "tcp",
-		Addr:                 fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.ServerPort),
+		Net:                  net,
+		Addr:                 addr,
 		DBName:               database,
 		ParseTime:            true,
 		Timeout:              5 * time.Second,
