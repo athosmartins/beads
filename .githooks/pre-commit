@@ -5,6 +5,19 @@
 
 set -euo pipefail
 
+# CGo (embedded Dolt) requires ICU4C headers and the CommandLineTools C++ stdlib
+# path so that golangci-lint typecheck succeeds in hook context.
+# CGO_CXXFLAGS overrides the C++ compilation flags; we must include the libc++
+# headers explicitly because CGo's C++ invocation doesn't pick them up by default.
+ICU_PREFIX=$(brew --prefix icu4c 2>/dev/null || true)
+if [ -n "$ICU_PREFIX" ]; then
+    CXX_INCLUDE="/Library/Developer/CommandLineTools/usr/include/c++/v1"
+    export CGO_CFLAGS="${CGO_CFLAGS:-} -I${ICU_PREFIX}/include"
+    export CGO_CPPFLAGS="${CGO_CPPFLAGS:-} -I${ICU_PREFIX}/include"
+    export CGO_CXXFLAGS="${CGO_CXXFLAGS:-} -std=c++17 -I${ICU_PREFIX}/include -I${CXX_INCLUDE}"
+    export CGO_LDFLAGS="${CGO_LDFLAGS:-} -L${ICU_PREFIX}/lib"
+fi
+
 # Only check staged Go files (Added, Copied, Modified)
 staged_go_files=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
 [ -z "$staged_go_files" ] && exit 0
