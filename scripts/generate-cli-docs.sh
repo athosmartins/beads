@@ -83,6 +83,7 @@ This reference covers all ${count} live top-level \`bd\` commands. Regenerate it
 EOF
 
     while IFS= read -r cmd; do
+        cmd="${cmd%$'\r'}"
         local doc_id
         doc_id="$(command_doc_id "$cmd")"
         printf -- "- [\`bd %s\`](./%s.md)\n" "$cmd" "$doc_id" >> "$out_dir/index.md"
@@ -99,9 +100,10 @@ generate_cli_dir() {
     generate_index "$out_dir" "$commands_file" "$version_label"
 
     while IFS= read -r cmd; do
+        cmd="${cmd%$'\r'}"
         local doc_id
         doc_id="$(command_doc_id "$cmd")"
-        "$BD" help --doc "$cmd" > "$out_dir/$doc_id.md"
+        "$BD" help --doc "$cmd" < /dev/null > "$out_dir/$doc_id.md"
         trim_trailing_blank_lines "$out_dir/$doc_id.md"
     done < "$commands_file"
 }
@@ -140,6 +142,15 @@ generate_all() {
 
 if [ "$CHECK_MODE" -eq 1 ]; then
     TMP_OUTPUT_DIR="$(mktemp -d)"
+    mkdir -p "$TMP_OUTPUT_DIR/website"
+    cp -Rf "$PROJECT_ROOT/website/docs" "$TMP_OUTPUT_DIR/website/docs"
+    if [ -d "$PROJECT_ROOT/website/versioned_docs" ]; then
+        cp -Rf "$PROJECT_ROOT/website/versioned_docs" "$TMP_OUTPUT_DIR/website/versioned_docs"
+    fi
+    if [ -f "$PROJECT_ROOT/website/versions.json" ]; then
+        cp -f "$PROJECT_ROOT/website/versions.json" "$TMP_OUTPUT_DIR/website/versions.json"
+    fi
+
     generate_all "$TMP_OUTPUT_DIR"
 
     if ! diff -qr \
@@ -169,6 +180,8 @@ if [ "$CHECK_MODE" -eq 1 ]; then
             fi
         fi
     done
+
+    "$PROJECT_ROOT/scripts/generate-llms-full.sh" --check --source-root "$TMP_OUTPUT_DIR"
 
     echo "PASS: generated CLI docs are fresh"
 else

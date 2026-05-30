@@ -255,6 +255,38 @@ func TestRemoveHookCommand(t *testing.T) {
 		},
 	}
 
+	// Separate test: sibling commands within the same hook entry must be
+	// preserved when only the matching command is removed. The bug that
+	// prompted this test dropped the entire hook entry on first match,
+	// silently deleting any sibling commands in the same hooks array.
+	t.Run("preserves sibling commands in same hook entry", func(t *testing.T) {
+		hooks := map[string]interface{}{
+			"SessionStart": []interface{}{
+				map[string]interface{}{
+					"matcher": "",
+					"hooks": []interface{}{
+						map[string]interface{}{"type": "command", "command": "bd prime"},
+						map[string]interface{}{"type": "command", "command": "other-tool"},
+					},
+				},
+			},
+		}
+		removeHookCommand(hooks, "SessionStart", "bd prime")
+
+		entries, ok := hooks["SessionStart"].([]interface{})
+		if !ok || len(entries) != 1 {
+			t.Fatalf("expected 1 hook entry to remain, got %v", hooks["SessionStart"])
+		}
+		entryMap := entries[0].(map[string]interface{})
+		cmds := entryMap["hooks"].([]interface{})
+		if len(cmds) != 1 {
+			t.Fatalf("expected 1 sibling command to remain, got %d", len(cmds))
+		}
+		if cmds[0].(map[string]interface{})["command"] != "other-tool" {
+			t.Errorf("sibling command was lost; commands: %v", cmds)
+		}
+	})
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			removeHookCommand(tt.existingHooks, tt.event, tt.command)
@@ -361,7 +393,7 @@ func TestInstallClaudeCleanupNullHooks(t *testing.T) {
 	if !ok {
 		t.Fatal("hooks section missing")
 	}
-	for _, event := range []string{"SessionStart", "PreCompact"} {
+	for _, event := range []string{"SessionStart"} {
 		eventHooks, ok := hooks[event].([]interface{})
 		if !ok {
 			t.Errorf("%s should be an array, not nil or missing", event)
@@ -386,9 +418,8 @@ func TestInstallClaudeUsesPrimeForClaudeHooks(t *testing.T) {
 	settingsJSON := string(data)
 
 	for _, want := range []string{
-		`"command": "bd prime"`,
+		`"command": "bd prime --hook-json"`,
 		`"SessionStart"`,
-		`"PreCompact"`,
 	} {
 		if !strings.Contains(settingsJSON, want) {
 			t.Fatalf("settings missing %q:\n%s", want, settingsJSON)
@@ -472,7 +503,7 @@ func TestHasBeadsHooks(t *testing.T) {
 			name: "has bd prime in PreCompact",
 			settingsData: map[string]interface{}{
 				"hooks": map[string]interface{}{
-					"PreCompact": []interface{}{
+					"SessionStart": []interface{}{
 						map[string]interface{}{
 							"matcher": "",
 							"hooks": []interface{}{
@@ -498,6 +529,44 @@ func TestHasBeadsHooks(t *testing.T) {
 								map[string]interface{}{
 									"type":    "command",
 									"command": "bd prime --stealth",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "has bd prime --hook-json hook (current format)",
+			settingsData: map[string]interface{}{
+				"hooks": map[string]interface{}{
+					"SessionStart": []interface{}{
+						map[string]interface{}{
+							"matcher": "",
+							"hooks": []interface{}{
+								map[string]interface{}{
+									"type":    "command",
+									"command": "bd prime --hook-json",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "has bd prime --stealth --hook-json hook (current format)",
+			settingsData: map[string]interface{}{
+				"hooks": map[string]interface{}{
+					"PreCompact": []interface{}{
+						map[string]interface{}{
+							"matcher": "",
+							"hooks": []interface{}{
+								map[string]interface{}{
+									"type":    "command",
+									"command": "bd prime --stealth --hook-json",
 								},
 							},
 						},
@@ -1003,6 +1072,46 @@ func TestInstallClaudeWritesHooksWithoutPlugin(t *testing.T) {
 	}
 	if !strings.Contains(out, "Registered SessionStart hook") {
 		t.Error("expected hooks to be registered without plugin")
+	}
+}
+
+func TestInstallClaudeReportsSkippedSymlinkInstructions(t *testing.T) {
+	env, stdout, stderr := newClaudeTestEnv(t)
+	target := filepath.Join(env.projectDir, "AGENTS.md")
+	if err := os.WriteFile(target, []byte("# Shared instructions\n"), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(env.projectDir, claudeInstructionsFile)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("installClaude: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "Claude Code hooks installed") {
+		t.Fatalf("expected partial hook success message, got:\n%s", out)
+	}
+	if strings.Contains(out, "Claude Code integration installed") {
+		t.Fatalf("should not report full integration success when instructions are skipped:\n%s", out)
+	}
+	if !strings.Contains(out, "Agent instructions skipped: CLAUDE.md is a symlink") {
+		t.Fatalf("expected skipped instructions summary, got:\n%s", out)
+	}
+	if !strings.Contains(stderr.String(), "CLAUDE.md is a symlink") {
+		t.Fatalf("expected symlink warning on stderr, got:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(projectSettingsPath(env.projectDir)); err != nil {
+		t.Fatalf("settings should still be installed: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if strings.Contains(string(data), "BEGIN BEADS INTEGRATION") {
+		t.Fatalf("symlink target should remain untouched:\n%s", data)
 	}
 }
 

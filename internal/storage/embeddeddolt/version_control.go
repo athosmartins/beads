@@ -41,10 +41,7 @@ func (s *EmbeddedDoltStore) withDBConn(ctx context.Context, fn func(db versionco
 
 func (s *EmbeddedDoltStore) Commit(ctx context.Context, message string) error {
 	return s.withConn(ctx, true, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_ADD('-A')"); err != nil {
-			return fmt.Errorf("dolt add: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?)", message); err != nil {
+		if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?)", message); err != nil {
 			return fmt.Errorf("dolt commit: %w", err)
 		}
 		return nil
@@ -52,7 +49,6 @@ func (s *EmbeddedDoltStore) Commit(ctx context.Context, message string) error {
 }
 
 // CommitWithConfig commits all working set changes including config.
-// EmbeddedDoltStore.Commit already includes config via DOLT_ADD('-A'),
 // so this is just an alias to satisfy the VersionControl interface (GH#3216).
 func (s *EmbeddedDoltStore) CommitWithConfig(ctx context.Context, message string) error {
 	return s.Commit(ctx, message)
@@ -82,23 +78,13 @@ func (s *EmbeddedDoltStore) HasRemote(ctx context.Context, name string) (bool, e
 
 func (s *EmbeddedDoltStore) Branch(ctx context.Context, name string) error {
 	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
-		if err := versioncontrolops.CreateBranch(ctx, db, name); err != nil {
-			return err
-		}
-		// dolt_ignore'd tables (wisps, wisp_*) don't carry over to new branches —
-		// ensure they exist on the newly created branch.
-		return versioncontrolops.EnsureIgnoredTables(ctx, db)
+		return versioncontrolops.CreateBranch(ctx, db, name)
 	})
 }
 
 func (s *EmbeddedDoltStore) Checkout(ctx context.Context, branch string) error {
 	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
-		if err := versioncontrolops.CheckoutBranch(ctx, db, branch); err != nil {
-			return err
-		}
-		// dolt_ignore'd tables (wisps, wisp_*) may not exist on the target branch —
-		// ensure they exist after checkout.
-		return versioncontrolops.EnsureIgnoredTables(ctx, db)
+		return versioncontrolops.CheckoutBranch(ctx, db, branch)
 	})
 }
 

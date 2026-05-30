@@ -71,10 +71,12 @@ Examples:
 			result.DatabasePath = dbPath
 		}
 
-		// Prefer YAML when available, otherwise do a scoped read-only reopen
-		// using the already-resolved dbPath so we can preserve prefix output
-		// without paying the old worktree-discovery cost.
-		if prefix := config.GetString("issue-prefix"); prefix != "" {
+		// Prefer the active workspace YAML when available. Avoid process-global
+		// config here because `bd where` may be reporting a workspace selected
+		// by BEADS_DB/BEADS_DIR rather than the caller's current repository.
+		if prefix := config.GetStringFromDir(beadsDir, "issue-prefix"); prefix != "" {
+			result.Prefix = prefix
+		} else if prefix := config.GetStringFromDir(beadsDir, "issue_prefix"); prefix != "" {
 			result.Prefix = prefix
 		} else if dbPath != "" && shouldReadWherePrefixFromStore(beadsDir) {
 			_ = withStorage(getRootContext(), nil, dbPath, func(currentStore storage.DoltStorage) error {
@@ -126,9 +128,10 @@ func shouldReadWherePrefixFromStore(beadsDir string) bool {
 		return true
 	}
 
-	// `bd where` should be able to report selected server-mode metadata without
-	// requiring a live Dolt server just to recover issue_prefix.
-	return !cfg.IsDoltServerMode()
+	// `bd where` should be able to report selected metadata without requiring
+	// a live Dolt server (or spawning the proxied-server daemon) just to
+	// recover issue_prefix.
+	return !cfg.IsDoltServerMode() && !cfg.IsDoltProxiedServerMode()
 }
 
 // findOriginalBeadsDir walks up from cwd looking for a .beads directory with a redirect file

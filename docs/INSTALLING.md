@@ -105,6 +105,8 @@ BEADS_INSTALL_RESIGN_MACOS=1 curl -fsSL https://raw.githubusercontent.com/gastow
 - **Nocgo (simplest, default in this doc):** `CGO_ENABLED=0 go install ...`. Works on any machine with a Go toolchain, no C compiler needed. Produces a **server-mode-only** binary — you must run an external `dolt sql-server` and use `bd init --server`. See [DOLT.md](DOLT.md) for server-mode setup.
 - **Cgo (embedded-capable):** `CGO_ENABLED=1 GOFLAGS=-tags=gms_pure_go go install ...`. Requires a C compiler (gcc/clang on Unix, MinGW on Windows). Produces a binary with the default embedded-Dolt backend — `bd init` Just Works.
 
+Use the `github.com/steveyegge/beads` path for `go install`. The repository now lives under `gastownhall/beads`, but released Go modules still declare `github.com/steveyegge/beads` for compatibility.
+
 If you don't have a preference, `brew install beads` / `install.sh` give you the embedded-capable build with no fuss.
 
 ## Platform-Specific Installation
@@ -278,19 +280,21 @@ bd init --quiet
 
 # 3. Setup editor integration (choose one)
 bd setup claude   # Claude Code - installs SessionStart/PreCompact hooks
+bd setup copilot  # GitHub Copilot CLI - creates .copilot-plugin/plugin.json + .github/copilot-instructions.md
 bd setup cursor   # Cursor IDE - creates .cursor/rules/beads.mdc
 bd setup aider    # Aider - creates .aider.conf.yml
-bd setup codex    # Codex CLI - installs Beads skill + AGENTS.md guidance
+bd setup codex    # Codex CLI - installs Beads skill, AGENTS.md guidance, and native hooks
 bd setup factory  # Factory.ai Droid - creates/updates AGENTS.md
 bd setup mux      # Mux - creates/updates AGENTS.md
 ```
 
 **How it works:**
-- `bd init` creates or updates `AGENTS.md` by default unless you use `--skip-agents` or `--stealth`
+- `bd init` creates or updates `AGENTS.md` and installs project Claude/Codex integrations by default unless you use `--skip-agents` or `--stealth`
 - Editor hooks/rules inject `bd prime` automatically on session start
+- Codex 0.129.0+ uses native `/hooks`: SessionStart injects `bd prime`, compact hooks mark context stale, and the next prompt after compaction refreshes Beads context once
 - `bd prime` provides ~1-2k tokens of workflow context
 - You use `bd` CLI commands directly
-- Git hooks (installed by `bd init`) auto-sync the database
+- Git hooks (installed by `bd init`) refresh exports and legacy fallbacks; `bd dolt push/pull` syncs the database
 - `bd onboard` prints the small manual snippet for unsupported agents or custom instruction files
 
 **Why this is recommended:**
@@ -302,6 +306,7 @@ bd setup mux      # Mux - creates/updates AGENTS.md
 **Verify installation:**
 ```bash
 bd setup claude --check   # Check Claude Code integration
+bd setup copilot --check  # Check GitHub Copilot CLI project integration
 bd setup cursor --check   # Check Cursor integration
 bd setup aider --check    # Check Aider integration
 bd setup codex --check    # Check Codex integration
@@ -373,6 +378,24 @@ For VS Code with GitHub Copilot:
 4. **Reload VS Code**
 
 See [COPILOT_INTEGRATION.md](COPILOT_INTEGRATION.md) for complete setup guide.
+
+### GitHub Copilot CLI
+
+For the GitHub Copilot CLI terminal integration:
+
+```bash
+bd setup copilot         # Install project Copilot plugin + repository instructions
+bd setup copilot --check # Verify the project integration files exist
+```
+
+This setup is currently project-scoped only. It writes:
+
+- `.copilot-plugin/plugin.json`
+- `.github/copilot-instructions.md`
+
+There is no separate `--global` or `--project` mode for Copilot today, and it does not manage `~/.copilot/...` paths.
+
+See [COPILOT_CLI_INTEGRATION.md](COPILOT_CLI_INTEGRATION.md) for the full guide.
 
 ### MCP Server (Alternative - for MCP-only environments)
 
@@ -496,7 +519,7 @@ See the "Claude Code Plugin" section above for alternative installation methods 
 After installation:
 
 1. **Initialize a project**: `cd your-project && bd init`
-2. **Configure your agent**: `bd init` creates/updates `AGENTS.md` by default; run `bd setup --list` for richer integrations or `bd onboard` for a manual fallback snippet
+2. **Configure your agent**: `bd init` creates/updates `AGENTS.md` and installs project Claude/Codex integrations by default; run `bd setup --list` for richer integrations or `bd onboard` for a manual fallback snippet
 3. **Learn the basics**: See [QUICKSTART.md](QUICKSTART.md) for a tutorial
 4. **Explore examples**: Check out the [examples/](../examples/) directory
 

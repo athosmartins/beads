@@ -98,7 +98,7 @@ Unlike 'bd init --force', bootstrap will never delete existing issues.
 
 Bootstrap auto-detects the right action:
   • If sync.remote is configured: clones from the remote
-  • If git origin has Dolt data (refs/dolt/data): clones from git
+  • If git origin has Dolt data (refs/dolt/data): clones from git and wires origin for future push/pull
   • If .beads/backup/*.jsonl exists: restores from backup
   • If .beads/issues.jsonl exists: imports from git-tracked JSONL
   • If no database exists: creates a fresh one
@@ -458,7 +458,7 @@ func printBootstrapPlan(plan BootstrapPlan) {
 	switch plan.Action {
 	case "none":
 		fmt.Printf("✓ Database already exists: %s\n", plan.BeadsDir)
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Printf("  Nothing to do.\n")
 		} else {
 			fmt.Printf("  Nothing to do. Use 'bd doctor' to check health.\n")
@@ -649,6 +649,7 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 		fmt.Fprintf(os.Stderr, "Warning: post-clone store init failed (wisp tables may be missing): %v\n", err)
 		return nil
 	}
+	configureInitDoltRemote(ctx, warmupStore, plan.SyncRemote, false)
 	_ = warmupStore.Close()
 
 	return nil
@@ -666,9 +667,12 @@ func finalizeSyncedBootstrap(beadsDir, syncRemote string, cfg *configfile.Config
 	// required by configfile.Load consumers.
 	cfg.Backend = configfile.BackendDolt
 	cfg.DoltDatabase = dbName
-	if cfg.IsDoltServerMode() || doltserver.IsSharedServerMode() {
+	switch {
+	case cfg.IsDoltProxiedServerMode():
+		cfg.DoltMode = configfile.DoltModeProxiedServer
+	case cfg.IsDoltServerMode() || doltserver.IsSharedServerMode():
 		cfg.DoltMode = configfile.DoltModeServer
-	} else {
+	default:
 		cfg.DoltMode = configfile.DoltModeEmbedded
 	}
 	// Mirror init's convention: metadata.json database points at the Dolt
