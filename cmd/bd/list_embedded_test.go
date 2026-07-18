@@ -367,6 +367,22 @@ func TestEmbeddedList(t *testing.T) {
 		if !containsID(issues, seed.openBug) {
 			t.Error("openBug with label 'backend' should match pattern 'back*'")
 		}
+		// ga-hqchm: LabelPattern was parsed but never wired into the SQL query
+		// builder, so a non-matching pattern silently returned every issue
+		// instead of an empty/filtered set. Assert exclusion, not just inclusion.
+		if containsID(issues, seed.feature) {
+			t.Error("feature with label 'frontend' should NOT match pattern 'back*' (ga-hqchm)")
+		}
+	})
+
+	t.Run("label_regex", func(t *testing.T) {
+		issues := bdListJSON(t, bd, dir, "--label-regex", "^back")
+		if !containsID(issues, seed.openBug) {
+			t.Error("openBug with label 'backend' should match regex '^back'")
+		}
+		if containsID(issues, seed.feature) {
+			t.Error("feature with label 'frontend' should NOT match regex '^back' (ga-hqchm)")
+		}
 	})
 
 	t.Run("exclude_label", func(t *testing.T) {

@@ -194,6 +194,95 @@ func TestBuildReadyWorkWhereLabelsAny(t *testing.T) {
 	}
 }
 
+// ga-hqchm: filter.LabelPattern/LabelRegex were parsed from --label-pattern/
+// --label-regex and stored on IssueFilter/WorkFilter, but neither
+// BuildIssueFilterClauses nor BuildReadyWorkWhere ever read them — the flags
+// were dead code and silently returned unfiltered results.
+func TestBuildIssueFilterClausesLabelPattern(t *testing.T) {
+	t.Parallel()
+
+	where, args, err := BuildIssueFilterClauses("", types.IssueFilter{LabelPattern: "tech-*"}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(where, " AND ")
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label LIKE ?)"
+	if !strings.Contains(joined, wantClause) {
+		t.Errorf("LabelPattern clause missing.\n where = %v\n want substring = %s", where, wantClause)
+	}
+	if len(args) != 1 || args[0] != "tech-%" {
+		t.Errorf("args = %v, want [%q] (glob * translated to SQL LIKE %%)", args, "tech-%")
+	}
+}
+
+func TestBuildIssueFilterClausesLabelRegex(t *testing.T) {
+	t.Parallel()
+
+	where, args, err := BuildIssueFilterClauses("", types.IssueFilter{LabelRegex: "tech-(debt|legacy)"}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(where, " AND ")
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label REGEXP ?)"
+	if !strings.Contains(joined, wantClause) {
+		t.Errorf("LabelRegex clause missing.\n where = %v\n want substring = %s", where, wantClause)
+	}
+	if len(args) != 1 || args[0] != "tech-(debt|legacy)" {
+		t.Errorf("args = %v, want the raw regex passed through unmodified", args)
+	}
+}
+
+func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
+	t.Parallel()
+
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{LabelPattern: "tech-*"}, IssuesFilterTables, ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label LIKE ?)"
+	if !strings.Contains(where, wantClause) {
+		t.Errorf("LabelPattern clause missing.\n where = %s\n want substring = %s", where, wantClause)
+	}
+	if len(args) == 0 || args[len(args)-1] != "tech-%" {
+		t.Errorf("args tail = %v, want last arg %q", args, "tech-%")
+	}
+}
+
+func TestBuildReadyWorkWhereLabelRegex(t *testing.T) {
+	t.Parallel()
+
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{LabelRegex: "tech-(debt|legacy)"}, IssuesFilterTables, ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label REGEXP ?)"
+	if !strings.Contains(where, wantClause) {
+		t.Errorf("LabelRegex clause missing.\n where = %s\n want substring = %s", where, wantClause)
+	}
+	if len(args) == 0 || args[len(args)-1] != "tech-(debt|legacy)" {
+		t.Errorf("args tail = %v, want last arg the raw regex", args)
+	}
+}
+
+func TestGlobToSQLLike(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ glob, want string }{
+		{"tech-*", "tech-%"},
+		{"file?.txt", "file_.txt"},
+		{"100%done", `100\%done`},
+		{"a_b", `a\_b`},
+		{`back\slash`, `back\\slash`},
+		{"*", "%"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := globToSQLLike(tc.glob); got != tc.want {
+			t.Errorf("globToSQLLike(%q) = %q, want %q", tc.glob, got, tc.want)
+		}
+	}
+}
+
 func TestSearchCountsSQLShape(t *testing.T) {
 	t.Parallel()
 
