@@ -170,10 +170,6 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label LIKE ?)", tables.Labels))
 		args = append(args, globToSQLLike(filter.LabelPattern))
 	}
-	if filter.LabelRegex != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label REGEXP ?)", tables.Labels))
-		args = append(args, filter.LabelRegex)
-	}
 
 	if filter.Pinned != nil {
 		if *filter.Pinned {

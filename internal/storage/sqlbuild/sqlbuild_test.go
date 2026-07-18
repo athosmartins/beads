@@ -194,10 +194,10 @@ func TestBuildReadyWorkWhereLabelsAny(t *testing.T) {
 	}
 }
 
-// ga-hqchm: filter.LabelPattern/LabelRegex were parsed from --label-pattern/
-// --label-regex and stored on IssueFilter/WorkFilter, but neither
-// BuildIssueFilterClauses nor BuildReadyWorkWhere ever read them — the flags
-// were dead code and silently returned unfiltered results.
+// ga-hqchm: filter.LabelPattern was parsed from --label-pattern and stored
+// on IssueFilter/WorkFilter, but neither BuildIssueFilterClauses nor
+// BuildReadyWorkWhere ever read it — the flag was dead code and silently
+// returned unfiltered results.
 func TestBuildIssueFilterClausesLabelPattern(t *testing.T) {
 	t.Parallel()
 
@@ -215,23 +215,6 @@ func TestBuildIssueFilterClausesLabelPattern(t *testing.T) {
 	}
 }
 
-func TestBuildIssueFilterClausesLabelRegex(t *testing.T) {
-	t.Parallel()
-
-	where, args, err := BuildIssueFilterClauses("", types.IssueFilter{LabelRegex: "tech-(debt|legacy)"}, IssuesFilterTables)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	joined := strings.Join(where, " AND ")
-	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label REGEXP ?)"
-	if !strings.Contains(joined, wantClause) {
-		t.Errorf("LabelRegex clause missing.\n where = %v\n want substring = %s", where, wantClause)
-	}
-	if len(args) != 1 || args[0] != "tech-(debt|legacy)" {
-		t.Errorf("args = %v, want the raw regex passed through unmodified", args)
-	}
-}
-
 func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
 	t.Parallel()
 
@@ -245,22 +228,6 @@ func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
 	}
 	if len(args) == 0 || args[len(args)-1] != "tech-%" {
 		t.Errorf("args tail = %v, want last arg %q", args, "tech-%")
-	}
-}
-
-func TestBuildReadyWorkWhereLabelRegex(t *testing.T) {
-	t.Parallel()
-
-	where, args, err := BuildReadyWorkWhere(types.WorkFilter{LabelRegex: "tech-(debt|legacy)"}, IssuesFilterTables, ReadyWorkWhereInputs{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label REGEXP ?)"
-	if !strings.Contains(where, wantClause) {
-		t.Errorf("LabelRegex clause missing.\n where = %s\n want substring = %s", where, wantClause)
-	}
-	if len(args) == 0 || args[len(args)-1] != "tech-(debt|legacy)" {
-		t.Errorf("args tail = %v, want last arg the raw regex", args)
 	}
 }
 

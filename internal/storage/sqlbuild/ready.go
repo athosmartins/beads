@@ -166,10 +166,6 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label LIKE ?)", tables.Labels))
 		args = append(args, globToSQLLike(filter.LabelPattern))
 	}
-	if filter.LabelRegex != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label REGEXP ?)", tables.Labels))
-		args = append(args, filter.LabelRegex)
-	}
 
 	// Parent filtering: return all transitive descendants of parentID.
 	// GH#3396: a one-hop subquery silently dropped grandchildren despite the
