@@ -14,6 +14,12 @@ import (
 // only the count: ephemeral-only filters route to the wisps table,
 // SkipWisps=true counts the durable issues table only, and otherwise the
 // wisps count is merged in (GH#4387).
+//
+// Known gap (ga-7r884): a set filter.LabelRegex is NOT reflected in this
+// count. LabelRegex is a Go-side, post-fetch filter (see compileLabelRegex)
+// — applying it here would require fetching and hydrating every candidate
+// row just to discard most of them, defeating the SELECT COUNT(*) this
+// function exists to provide cheaply. The returned count is pre-regex.
 func CountIssuesInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter) (int, error) {
 	if filter.Ephemeral != nil && *filter.Ephemeral {
 		wispCount, err := countTableInTx(ctx, tx, query, filter, WispsFilterTables)

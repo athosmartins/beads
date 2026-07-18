@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
@@ -11,6 +12,18 @@ import (
 )
 
 func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
+	// LabelRegex can't be pushed into whereSQL (see compileLabelRegex), so it's
+	// applied in Go via finishSearchIssuesWithCounts below. Compile once up
+	// front: every return path in this function funnels through that helper.
+	var labelRe *regexp.Regexp
+	if filter.LabelRegex != "" {
+		var reErr error
+		labelRe, reErr = compileLabelRegex(filter.LabelRegex)
+		if reErr != nil {
+			return nil, reErr
+		}
+	}
+
 	wispDepsExist, err := optionalTableExistsInTx(ctx, tx, "wisp_dependencies")
 	if err != nil {
 		return nil, fmt.Errorf("search issues with counts: wisp dependency probe: %w", err)
@@ -27,7 +40,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 				return nil, err
 			}
 			if len(wisps) > 0 {
-				return finishSearchIssuesWithCounts(wisps, filter), nil
+				return finishSearchIssuesWithCounts(wisps, filter, labelRe), nil
 			}
 		}
 		// Fall through: the wisps tier is missing/empty or matched no rows.
@@ -40,7 +53,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		if err != nil {
 			return nil, err
 		}
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 	}
 
 	out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)
@@ -50,7 +63,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 
 	// Skip wisps merge entirely when caller opts out (Q2: perf escape hatch).
 	if filter.SkipWisps {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 	}
 
 	empty, probeErr := wispsTableEmptyOrMissingInTx(ctx, tx)
@@ -58,21 +71,21 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		return nil, fmt.Errorf("search issues with counts: wisp probe: %w", probeErr)
 	}
 	if empty {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 	}
 	if !wispDepsExist {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 	}
 
 	wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
 	if err != nil {
 		if isTableNotExistError(err) {
-			return finishSearchIssuesWithCounts(out, filter), nil
+			return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 		}
 		return nil, err
 	}
 	if len(wisps) == 0 {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter, labelRe), nil
 	}
 
 	// Prefer the canonical wisp record when an ID exists in both tables (be-iabdi).
@@ -93,7 +106,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		}
 	}
 	kept = append(kept, wisps...)
-	return finishSearchIssuesWithCounts(kept, filter), nil
+	return finishSearchIssuesWithCounts(kept, filter, labelRe), nil
 }
 
 func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
@@ -105,8 +118,12 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 	if len(whereClauses) > 0 {
 		whereSQL = "WHERE " + joinAnd(whereClauses)
 	}
+	// See SearchIssuesWithCountsInTx: LabelRegex is applied in Go after
+	// fetching, so the SQL LIMIT is suppressed here to avoid capping the
+	// pre-regex candidate set. finishSearchIssuesWithCounts applies
+	// filter.Limit itself once the regex filter (if any) has run.
 	limitSQL := ""
-	if filter.Limit > 0 {
+	if filter.Limit > 0 && filter.LabelRegex == "" {
 		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
 	}
 	orderBy := sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "i")
@@ -154,7 +171,14 @@ func scanCountsRowsInTx(ctx context.Context, tx *sql.Tx, mainTable, query string
 	return out, nil
 }
 
-func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.IssueFilter) []*types.IssueWithCounts {
+// finishSearchIssuesWithCounts applies the LabelRegex post-fetch filter (see
+// compileLabelRegex), sorts, and truncates to filter.Limit. labelRe is nil
+// when filter.LabelRegex is unset, in which case items is already
+// SQL-LIMIT-bound and the truncate below is a no-op.
+func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.IssueFilter, labelRe *regexp.Regexp) []*types.IssueWithCounts {
+	if labelRe != nil {
+		items = filterIssuesWithCountsByLabelRegex(items, labelRe)
+	}
 	sortSearchIssuesWithCounts(items, filter.SortBy, filter.SortDesc)
 	if filter.Limit > 0 && len(items) > filter.Limit {
 		return items[:filter.Limit]

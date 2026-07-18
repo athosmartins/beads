@@ -104,7 +104,7 @@ func TestFinishSearchIssuesWithCountsTruncatesByRequestedSort(t *testing.T) {
 		iwc("bd-newest-p4", 4, at(10)),
 	}
 
-	got := finishSearchIssuesWithCounts(items, types.IssueFilter{SortBy: "created", Limit: 2})
+	got := finishSearchIssuesWithCounts(items, types.IssueFilter{SortBy: "created", Limit: 2}, nil)
 	if len(got) != 2 || got[0].Issue.ID != "bd-newest-p4" || got[1].Issue.ID != "bd-new-p3" {
 		ids := make([]string, len(got))
 		for i, g := range got {
@@ -114,7 +114,7 @@ func TestFinishSearchIssuesWithCountsTruncatesByRequestedSort(t *testing.T) {
 	}
 
 	// SortDesc flips the per-key default direction: created becomes ASC.
-	got = finishSearchIssuesWithCounts(items, types.IssueFilter{SortBy: "created", SortDesc: true, Limit: 2})
+	got = finishSearchIssuesWithCounts(items, types.IssueFilter{SortBy: "created", SortDesc: true, Limit: 2}, nil)
 	if len(got) != 2 || got[0].Issue.ID != "bd-old-p0" || got[1].Issue.ID != "bd-mid-p2" {
 		ids := make([]string, len(got))
 		for i, g := range got {
@@ -124,7 +124,7 @@ func TestFinishSearchIssuesWithCountsTruncatesByRequestedSort(t *testing.T) {
 	}
 
 	// Default (no SortBy) keeps the historical priority/created/id order.
-	got = finishSearchIssuesWithCounts(items, types.IssueFilter{Limit: 2})
+	got = finishSearchIssuesWithCounts(items, types.IssueFilter{Limit: 2}, nil)
 	if len(got) != 2 || got[0].Issue.ID != "bd-old-p0" || got[1].Issue.ID != "bd-mid-p2" {
 		ids := make([]string, len(got))
 		for i, g := range got {
@@ -132,4 +132,56 @@ func TestFinishSearchIssuesWithCountsTruncatesByRequestedSort(t *testing.T) {
 		}
 		t.Fatalf("default sort limit=2 kept %v, want [bd-old-p0 bd-mid-p2]", ids)
 	}
+}
+
+// ga-7r884: bd list --json goes through SearchIssuesWithCountsInTx, a
+// separate implementation from SearchIssuesInTx (search.go) with its own
+// row-fetch/hydrate/sort/truncate pipeline — LabelRegex needs its own
+// post-fetch filter applied here too, not just in the plain (non-json) path.
+func TestFinishSearchIssuesWithCountsAppliesLabelRegex(t *testing.T) {
+	t.Parallel()
+
+	iwc := func(id string, labels ...string) *types.IssueWithCounts {
+		return &types.IssueWithCounts{Issue: &types.Issue{ID: id, Labels: labels}}
+	}
+	items := []*types.IssueWithCounts{
+		iwc("a", "tech-debt"),
+		iwc("b", "frontend"),
+		iwc("c", "tech-legacy"),
+	}
+
+	re, err := compileLabelRegex("^tech-")
+	if err != nil {
+		t.Fatalf("compileLabelRegex: %v", err)
+	}
+
+	got := finishSearchIssuesWithCounts(items, types.IssueFilter{}, re)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2 (a, c); got ids: %v", len(got), issueWithCountsIDs(got))
+	}
+	for _, want := range []string{"a", "c"} {
+		found := false
+		for _, g := range got {
+			if g.Issue.ID == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q in filtered result, got ids: %v", want, issueWithCountsIDs(got))
+		}
+	}
+
+	// nil labelRe (the LabelRegex-unset case) must not filter anything.
+	if got := finishSearchIssuesWithCounts(items, types.IssueFilter{}, nil); len(got) != len(items) {
+		t.Errorf("nil labelRe: len(got) = %d, want %d (unfiltered)", len(got), len(items))
+	}
+}
+
+func issueWithCountsIDs(items []*types.IssueWithCounts) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.Issue.ID
+	}
+	return ids
 }

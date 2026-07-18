@@ -122,6 +122,45 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 	}
 }
 
+// ga-7r884: LabelRegex can't be pushed into whereSQL (bd does not use SQL
+// REGEXP functions), so GetReadyWorkInTx applies it in Go after fetching.
+// buildReadyWorkPredicates must suppress the SQL LIMIT whenever LabelRegex is
+// set — otherwise the LIMIT would cap the pre-regex candidate set and
+// GetReadyWorkInTx's post-filter could silently drop real matches beyond the
+// first filter.Limit unfiltered rows (the same "wrong result, no error"
+// shape ga-hqchm hit with LabelPattern, just via a different mechanism).
+// IncludeDeferred:true and ParentID:nil keep this a pure predicate-building
+// call with no SQL round-trips, so no sqlmock expectations are needed beyond
+// the transaction sqlmock.New() itself always requires.
+func TestBuildReadyWorkPredicates_SuppressesLimitSQLWhenLabelRegexSet(t *testing.T) {
+	t.Parallel()
+
+	_, _, tx := beginMockTx(t)
+
+	withRegex, err := buildReadyWorkPredicates(context.Background(), tx, types.WorkFilter{
+		IncludeDeferred: true,
+		Limit:           10,
+		LabelRegex:      "tech-.*",
+	}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("buildReadyWorkPredicates (LabelRegex set): %v", err)
+	}
+	if withRegex.limitSQL != "" {
+		t.Errorf("limitSQL = %q, want empty when LabelRegex is set (regex filter runs post-fetch in Go)", withRegex.limitSQL)
+	}
+
+	withoutRegex, err := buildReadyWorkPredicates(context.Background(), tx, types.WorkFilter{
+		IncludeDeferred: true,
+		Limit:           10,
+	}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("buildReadyWorkPredicates (no LabelRegex): %v", err)
+	}
+	if want := "LIMIT 10"; withoutRegex.limitSQL != want {
+		t.Errorf("limitSQL = %q, want %q when LabelRegex is unset (existing SQL-pushdown behavior preserved)", withoutRegex.limitSQL, want)
+	}
+}
+
 func TestLoadStatusByIDInTxPrefersWispOnCollision(t *testing.T) {
 	t.Parallel()
 

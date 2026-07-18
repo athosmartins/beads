@@ -89,6 +89,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		labels, _ := cmd.Flags().GetStringSlice("label")
 		labelsAny, _ := cmd.Flags().GetStringSlice("label-any")
 		excludeLabels, _ := cmd.Flags().GetStringSlice("exclude-label")
+		labelRegex, _ := cmd.Flags().GetString("label-regex")
 		issueType, _ := cmd.Flags().GetString("type")
 		issueType = utils.NormalizeIssueType(issueType) // Expand aliases (mr→merge-request, etc.)
 		parentID, _ := cmd.Flags().GetString("parent")
@@ -141,6 +142,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			Labels:           labels,
 			LabelsAny:        labelsAny,
 			ExcludeLabels:    excludeLabels,
+			LabelRegex:       labelRegex,
 			IncludeDeferred:  includeDeferred,  // GH#820: respect --include-deferred flag
 			IncludeEphemeral: includeEphemeral, // bd-i5k5x: allow ephemeral issues (e.g., merge-requests)
 			ExcludeTypes:     excludeTypes,
@@ -754,6 +756,12 @@ func init() {
 	readyCmd.Flags().StringSliceP("label", "l", []string{}, "Filter by labels (AND: must have ALL). Can combine with --label-any")
 	readyCmd.Flags().StringSlice("label-any", []string{}, "Filter by labels (OR: must have AT LEAST ONE). Can combine with --label")
 	readyCmd.Flags().StringSlice("exclude-label", []string{}, "Exclude issues that have ANY of these labels")
+	readyCmd.Flags().String("label-regex", "", "Filter by label regex pattern (e.g., 'tech-(debt|legacy)')")
+	// --label-pattern (glob) is intentionally NOT registered here yet: unlike
+	// --label-regex, BuildReadyWorkWhere doesn't read WorkFilter.LabelPattern
+	// until #4882 lands (ga-hqchm's SQL LIKE wiring), so exposing it on this
+	// command now would silently no-op — the exact dead-flag bug ga-7r884
+	// exists to eliminate, just on a third callsite. Add it once #4882 merges.
 	readyCmd.Flags().StringP("type", "t", "", "Filter by issue type (task, bug, feature, epic, decision, merge-request). Aliases: mr→merge-request, feat→feature, mol→molecule, dec/adr→decision")
 	readyCmd.Flags().String("mol", "", "Filter to steps within a specific molecule")
 	readyCmd.Flags().String("parent", "", "Filter to descendants of this bead/epic")

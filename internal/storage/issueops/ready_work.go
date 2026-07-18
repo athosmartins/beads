@@ -74,8 +74,13 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 	args = append(args, whereArgs...)
 	args = append(args, orderBy.Args...)
 
+	// LabelRegex can't be pushed into whereSQL (see compileLabelRegex), so
+	// GetReadyWorkInTx applies it in Go after fetching. Suppress the SQL
+	// LIMIT in that case — otherwise it would cap the pre-regex candidate
+	// set and could drop real matches — and let GetReadyWorkInTx apply
+	// filter.Limit itself once the regex filter has run.
 	var limitSQL string
-	if filter.Limit > 0 {
+	if filter.Limit > 0 && filter.LabelRegex == "" {
 		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
 	}
 
@@ -128,12 +133,26 @@ func GetReadyWorkInTx(
 		}
 	}
 
+	if filter.LabelRegex != "" {
+		re, reErr := compileLabelRegex(filter.LabelRegex)
+		if reErr != nil {
+			return nil, reErr
+		}
+		ordered = filterIssuesByLabelRegex(ordered, re)
+	}
+
 	wisps, wErr := getReadyWispsInTx(ctx, tx, filter, preds.deferredChildIDs)
 	if wErr != nil {
 		return nil, wErr
 	}
 	if len(wisps) > 0 {
+		// mergeReadyWisps applies filter.Limit itself after merging.
 		ordered = mergeReadyWisps(ordered, wisps, filter)
+	} else if filter.LabelRegex != "" && filter.Limit > 0 && len(ordered) > filter.Limit {
+		// No wisps to merge, so mergeReadyWisps' truncate never runs. The SQL
+		// LIMIT was suppressed above (LabelRegex set), so ordered can still
+		// exceed filter.Limit here — apply it now that the regex filter has run.
+		ordered = ordered[:filter.Limit]
 	}
 
 	return ordered, nil

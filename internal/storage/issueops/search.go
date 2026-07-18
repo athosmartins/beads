@@ -43,6 +43,12 @@ type searchProjection[T any] struct {
 	// set is closed (so we don't hold multiple active result sets on the same
 	// connection). nil for projections that don't need post-scan loading.
 	hydrate func(ctx context.Context, tx DBTX, tables FilterTables, items []T, filter types.IssueFilter) error
+	// labelsOf extracts an item's labels for the Go-side LabelRegex filter
+	// (see compileLabelRegex — LabelRegex can't be pushed into the WHERE
+	// clause the way LabelPattern is). nil for projections that never
+	// hydrate labels; searchTableInTxT errors rather than silently ignoring
+	// LabelRegex if one reaches it.
+	labelsOf func(T) []string
 	// idShrink enables Pattern B (cheap SELECT id scan → batch hydrate) for
 	// limited queries. Worth it only for wide projections; the id projection
 	// already scans id-only with no hydration, so it leaves this false.
@@ -57,6 +63,7 @@ var issueProjection = searchProjection[*types.Issue]{
 	scan:       func(rows *sql.Rows) (*types.Issue, error) { return ScanIssueFrom(rows) },
 	id:         func(issue *types.Issue) string { return issue.ID },
 	hydrate:    hydrateIssueLabelsAndDeps,
+	labelsOf:   func(issue *types.Issue) []string { return issue.Labels },
 	idShrink:   true,
 	joinLeases: true,
 }
@@ -190,7 +197,13 @@ func searchTableInTxT[T any](ctx context.Context, tx DBTX, query string, filter 
 	// (mirrors GetStaleIssuesInTx). The id projection itself leaves idShrink
 	// false: it *is* the id-only scan, so it falls straight through to the
 	// direct path below — one query, no second fetch, no hydration.
-	if proj.idShrink && filter.Limit > 0 && !filter.NoIDShrink {
+	//
+	// LabelRegex can't be pushed into the id-only scan's WHERE clause (see
+	// compileLabelRegex), so a LIMIT-bound id-shrink would apply the SQL
+	// LIMIT to candidates the regex hasn't filtered yet and could drop real
+	// matches. Fall through to the direct path instead, which fetches every
+	// WHERE-matching row, regex-filters, then applies filter.Limit last.
+	if proj.idShrink && filter.Limit > 0 && !filter.NoIDShrink && filter.LabelRegex == "" {
 		return searchTablePatternBT(ctx, tx, query, filter, tables, proj)
 	}
 
@@ -207,9 +220,12 @@ func searchTableInTxT[T any](ctx context.Context, tx DBTX, query string, filter 
 	}
 
 	limitSQL := ""
-	if filter.Limit > 0 {
+	if filter.Limit > 0 && filter.LabelRegex == "" {
 		limitSQL = fmt.Sprintf(" LIMIT %d", filter.Limit)
 	}
+	// When LabelRegex is set, filter.Limit is applied in Go after the regex
+	// filter runs (below) instead of here — otherwise a real match beyond
+	// the first filter.Limit pre-regex rows would be silently dropped.
 
 	selectKeyword := "SELECT "
 	if plan.Distinct {
@@ -252,6 +268,26 @@ func searchTableInTxT[T any](ctx context.Context, tx DBTX, query string, filter 
 	if proj.hydrate != nil && len(results) > 0 {
 		if err := proj.hydrate(ctx, tx, tables, results, filter); err != nil {
 			return nil, fmt.Errorf("search %s: %w", tables.Main, err)
+		}
+	}
+
+	if filter.LabelRegex != "" {
+		if proj.labelsOf == nil {
+			return nil, fmt.Errorf("search %s: --label-regex requires a projection that hydrates labels", tables.Main)
+		}
+		re, reErr := compileLabelRegex(filter.LabelRegex)
+		if reErr != nil {
+			return nil, reErr
+		}
+		filteredResults := make([]T, 0, len(results))
+		for _, item := range results {
+			if labelsMatchRegex(proj.labelsOf(item), re) {
+				filteredResults = append(filteredResults, item)
+			}
+		}
+		results = filteredResults
+		if filter.Limit > 0 && len(results) > filter.Limit {
+			results = results[:filter.Limit]
 		}
 	}
 

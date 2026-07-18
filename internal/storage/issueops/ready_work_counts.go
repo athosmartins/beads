@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
@@ -12,6 +13,20 @@ import (
 )
 
 func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
+	// LabelRegex can't be pushed into whereSQL (see compileLabelRegex), so
+	// it's applied in Go below, to both the issues and wisps result sets.
+	// buildReadyWorkPredicates already suppresses the SQL LIMIT whenever
+	// LabelRegex is set (avoids capping the pre-regex candidate set); this
+	// function applies filter.Limit itself once filtering has run.
+	var labelRe *regexp.Regexp
+	if filter.LabelRegex != "" {
+		var reErr error
+		labelRe, reErr = compileLabelRegex(filter.LabelRegex)
+		if reErr != nil {
+			return nil, reErr
+		}
+	}
+
 	wispDepsExist, err := optionalTableExistsInTx(ctx, tx, "wisp_dependencies")
 	if err != nil {
 		return nil, fmt.Errorf("get ready work with counts: wisp dependency probe: %w", err)
@@ -25,16 +40,19 @@ func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.Wo
 	if err != nil {
 		return nil, err
 	}
+	if labelRe != nil {
+		out = filterIssuesWithCountsByLabelRegex(out, labelRe)
+	}
 
 	empty, probeErr := wispsTableEmptyOrMissingInTx(ctx, tx)
 	if probeErr != nil {
 		return nil, fmt.Errorf("get ready work with counts: wisp probe: %w", probeErr)
 	}
 	if empty {
-		return out, nil
+		return truncateIssuesWithCounts(out, filter.Limit), nil
 	}
 	if !wispDepsExist {
-		return out, nil
+		return truncateIssuesWithCounts(out, filter.Limit), nil
 	}
 
 	wispPreds, err := buildReadyWorkPredicates(ctx, tx, filter, WispsFilterTables)
@@ -44,12 +62,15 @@ func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.Wo
 	wisps, err := runReadyCountsInTx(ctx, tx, WispsFilterTables, filter.Limit, wispPreds, true, false)
 	if err != nil {
 		if isTableNotExistError(err) {
-			return out, nil
+			return truncateIssuesWithCounts(out, filter.Limit), nil
 		}
 		return nil, err
 	}
+	if labelRe != nil {
+		wisps = filterIssuesWithCountsByLabelRegex(wisps, labelRe)
+	}
 	if len(wisps) == 0 {
-		return out, nil
+		return truncateIssuesWithCounts(out, filter.Limit), nil
 	}
 
 	// Prefer the canonical wisp record when an ID exists in both tables (be-iabdi).
@@ -148,7 +169,18 @@ func runReadyCountsInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, li
 
 // CountReadyWorkInTx returns the number of ready-work items — identical to
 // len(GetReadyWorkWithCountsInTx(filter with Limit=0)) — without materializing
-// the counts mega-query. The ready set is a union of the issues and wisps that
+// the counts mega-query.
+//
+// Known gap (ga-7r884): this identity does NOT hold when filter.LabelRegex is
+// set. LabelRegex is a Go-side, post-fetch filter (see compileLabelRegex) —
+// applying it here would mean fetching and hydrating every candidate row just
+// to discard most of them, defeating the SELECT COUNT(*) this function exists
+// to avoid. The count returned counts pre-regex matches, so any caller using
+// it as a "Showing X of N" total while LabelRegex is also set will see an N
+// that overcounts. Not fixed here: same "count-only path can't apply a
+// Go-side filter" shape as CountIssuesInTx.
+//
+// The ready set is a union of the issues and wisps that
 // match the ready predicate, so it sizes each family with a single indexed
 // COUNT(*) over that predicate and subtracts the overlap (IDs present in both
 // ready sets, which GetReadyWorkWithCountsInTx dedupes wisp-wins). It never
