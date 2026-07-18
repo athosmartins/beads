@@ -724,6 +724,39 @@ func (s *DoltStore) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) e
 	})
 }
 
+// withReadTxLongTimeout is like withReadTx but runs fn against a dedicated
+// one-shot connection with a 5-minute read timeout (see openLongTimeoutConn)
+// instead of the shared pool's 10s ReadTimeout (see buildServerDSN). Use for
+// read queries that are known to legitimately run long, e.g. dolt_history_*
+// system-table scans on issues with many revisions — the pooled 10s client
+// timeout otherwise surfaces as an intermittent MySQL i/o timeout / invalid
+// connection error (ga-ahnxx) well before the query would have finished on
+// its own. Note this only removes the client-side ceiling: the Dolt server's
+// own read_timeout_millis (30s in this city's dolt-config.yaml, deliberately
+// short to bound orphaned-connection pileup — see the comment next to it)
+// still applies server-side and can independently abort a query whose
+// per-row production stalls past that window.
+func (s *DoltStore) withReadTxLongTimeout(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if s.closed.Load() {
+		return ErrStoreClosed
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.withRetry(ctx, func() error {
+		db, err := s.openLongTimeoutConn()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin read tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		return fn(tx)
+	})
+}
+
 func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
