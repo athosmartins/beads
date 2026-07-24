@@ -48,9 +48,33 @@ func TestHistory_UsesDedicatedLongTimeoutConnection(t *testing.T) {
 		t.Fatalf("failed to commit: %v", err)
 	}
 
-	// Sanity check: History works before we break anything.
-	if _, err := store.History(ctx, issue.ID); err != nil {
+	// Sanity check: History works before we break anything, and it must
+	// actually read the store's checked-out branch — setupTestStore checks
+	// out an isolated test branch via a raw CALL DOLT_CHECKOUT on store.db
+	// (testutil.StartTestBranch), which bypasses Store.Checkout and never
+	// updates s.branch. If openLongTimeoutConn's fresh connection doesn't
+	// also select that branch, this query silently reads the (schema-only,
+	// issue-less) default branch instead and returns an empty result with a
+	// nil error — a passing err check alone would not catch that.
+	sanityHistory, err := store.History(ctx, issue.ID)
+	if err != nil {
 		t.Fatalf("History failed before connStr corruption: %v", err)
+	}
+	if len(sanityHistory) == 0 {
+		t.Fatal("expected non-empty history for the created issue; got none — " +
+			"History is likely reading the default branch instead of the " +
+			"store's actual checked-out branch (see withReadTxLongTimeout)")
+	}
+	found := false
+	for _, entry := range sanityHistory {
+		if entry.Issue != nil && (entry.Issue.ID == issue.ID || entry.Issue.Title == issue.Title) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected history to contain the created issue %q (title %q), got entries: %+v",
+			issue.ID, issue.Title, sanityHistory)
 	}
 
 	// Break store.connStr to an address that fails DNS resolution fast and
