@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
@@ -1285,6 +1286,7 @@ func resolveSocketTransport(socket, host string, port int, timeout time.Duration
 		return socket // socket is live — keep using it
 	}
 	if port > 0 && dialProbe("tcp", net.JoinHostPort(host, strconv.Itoa(port)), timeout) == nil {
+		debug.Logf("dolt: socket %s unreachable, falling back to TCP %s\n", socket, net.JoinHostPort(host, strconv.Itoa(port)))
 		return "" // socket down but TCP up — transparently fall back to TCP
 	}
 	return socket // both down (or no TCP port) — keep socket for the error path
