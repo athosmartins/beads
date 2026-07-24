@@ -195,26 +195,11 @@ func TestBuildReadyWorkWhereLabelsAny(t *testing.T) {
 }
 
 // ga-hqchm: filter.LabelPattern was parsed from --label-pattern and stored
-// on IssueFilter/WorkFilter, but neither BuildIssueFilterClauses nor
-// BuildReadyWorkWhere ever read it — the flag was dead code and silently
-// returned unfiltered results.
-func TestBuildIssueFilterClausesLabelPattern(t *testing.T) {
-	t.Parallel()
-
-	where, args, err := BuildIssueFilterClauses("", types.IssueFilter{LabelPattern: "tech-*"}, IssuesFilterTables)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	joined := strings.Join(where, " AND ")
-	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label LIKE ?)"
-	if !strings.Contains(joined, wantClause) {
-		t.Errorf("LabelPattern clause missing.\n where = %v\n want substring = %s", where, wantClause)
-	}
-	if len(args) != 1 || args[0] != "tech-%" {
-		t.Errorf("args = %v, want [%q] (glob * translated to SQL LIKE %%)", args, "tech-%")
-	}
-}
-
+// on WorkFilter, but BuildReadyWorkWhere never read it — the flag was dead
+// code on the ready path and silently returned unfiltered results.
+// BuildIssueFilterClauses coverage for LabelPattern/LabelRegex lives with
+// the list path (be402a022, #3971); this covers only the ready path's own
+// clause shape, which mirrors filter.go's LIKE ... ESCAPE '|' pattern.
 func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
 	t.Parallel()
 
@@ -222,7 +207,7 @@ func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label LIKE ?)"
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label LIKE ? ESCAPE '|')"
 	if !strings.Contains(where, wantClause) {
 		t.Errorf("LabelPattern clause missing.\n where = %s\n want substring = %s", where, wantClause)
 	}
@@ -231,22 +216,22 @@ func TestBuildReadyWorkWhereLabelPattern(t *testing.T) {
 	}
 }
 
-func TestGlobToSQLLike(t *testing.T) {
+// #4884 intent: filter.LabelRegex was likewise dead on the ready path.
+// BuildReadyWorkWhere must emit a REGEXP subquery mirroring filter.go's
+// LabelRegex clause.
+func TestBuildReadyWorkWhereLabelRegex(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct{ glob, want string }{
-		{"tech-*", "tech-%"},
-		{"file?.txt", "file_.txt"},
-		{"100%done", `100\%done`},
-		{"a_b", `a\_b`},
-		{`back\slash`, `back\\slash`},
-		{"*", "%"},
-		{"", ""},
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{LabelRegex: "^tech-"}, IssuesFilterTables, ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, tc := range cases {
-		if got := globToSQLLike(tc.glob); got != tc.want {
-			t.Errorf("globToSQLLike(%q) = %q, want %q", tc.glob, got, tc.want)
-		}
+	wantClause := "id IN (SELECT issue_id FROM " + IssuesFilterTables.Labels + " WHERE label REGEXP ?)"
+	if !strings.Contains(where, wantClause) {
+		t.Errorf("LabelRegex clause missing.\n where = %s\n want substring = %s", where, wantClause)
+	}
+	if len(args) == 0 || args[len(args)-1] != "^tech-" {
+		t.Errorf("args tail = %v, want last arg %q", args, "^tech-")
 	}
 }
 
