@@ -47,6 +47,8 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		}()
 
 		claimReady, _ := cmd.Flags().GetBool("claim")
+		labelPattern, _ := cmd.Flags().GetString("label-pattern")
+		labelRegex, _ := cmd.Flags().GetString("label-regex")
 
 		if usesProxiedServer() {
 			// --claim consumes exactly one row, same reasoning as the
@@ -109,8 +111,6 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		labels, _ := cmd.Flags().GetStringSlice("label")
 		labelsAny, _ := cmd.Flags().GetStringSlice("label-any")
 		excludeLabels, _ := cmd.Flags().GetStringSlice("exclude-label")
-		labelPattern, _ := cmd.Flags().GetString("label-pattern")
-		labelRegex, _ := cmd.Flags().GetString("label-regex")
 		issueType, _ := cmd.Flags().GetString("type")
 		issueType = utils.NormalizeIssueType(issueType) // Expand aliases (mr→merge-request, etc.)
 		parentID, _ := cmd.Flags().GetString("parent")
