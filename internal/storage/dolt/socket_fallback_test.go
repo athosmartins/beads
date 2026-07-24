@@ -1,8 +1,10 @@
 package dolt
 
 import (
+	"context"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -11,24 +13,35 @@ import (
 // Dolt server connections (gt-28itz). These tests stub dialProbe so they run
 // without a live Dolt server.
 
-func withStubbedDialProbe(t *testing.T, reachable map[string]bool) {
+type probeCall struct {
+	network string
+	addr    string
+}
+
+func withStubbedDialProbe(t *testing.T, reachable map[string]bool) *[]probeCall {
 	t.Helper()
 	orig := dialProbe
 	t.Cleanup(func() { dialProbe = orig })
+	var calls []probeCall
 	dialProbe = func(network, addr string, _ time.Duration) error {
+		calls = append(calls, probeCall{network: network, addr: addr})
 		if reachable[network+"|"+addr] {
 			return nil
 		}
 		return errors.New("stub: unreachable " + network + " " + addr)
 	}
+	return &calls
 }
 
 // No socket configured → pure TCP, no probing, returns "".
 func TestResolveSocketTransport_NoSocket(t *testing.T) {
-	withStubbedDialProbe(t, map[string]bool{})
+	calls := withStubbedDialProbe(t, map[string]bool{})
 	got := resolveSocketTransport("", "127.0.0.1", 52756, 100*time.Millisecond)
 	if got != "" {
 		t.Errorf("expected empty socket (TCP), got %q", got)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("expected no probes without a configured socket, got %v", *calls)
 	}
 }
 
@@ -74,5 +87,60 @@ func TestResolveSocketTransport_SocketDownNoPort_KeepsSocket(t *testing.T) {
 	got := resolveSocketTransport("/tmp/mysql.sock", "127.0.0.1", 0, 100*time.Millisecond)
 	if got != "/tmp/mysql.sock" {
 		t.Errorf("expected socket kept (no TCP port), got %q", got)
+	}
+}
+
+// Socket fallback is wired in newServerMode before its fail-fast connection
+// dial. Keep this test on the connection-error path so it needs no live Dolt
+// server while still proving that server-mode configuration is normalized.
+func TestNewServerMode_SocketDownTCPUpFallsBack(t *testing.T) {
+	t.Setenv("BEADS_TEST_MODE", "1")
+	const socket = "/tmp/beads-test-mysql.sock"
+	const host = "127.0.0.1"
+	const port = 1 // expected to be unreachable for the eventual real connection dial
+	tcpAddr := net.JoinHostPort(host, "1")
+	calls := withStubbedDialProbe(t, map[string]bool{
+		"tcp|" + tcpAddr: true,
+	})
+	cfg := &Config{
+		Database:     "test_socket_fallback_wiring",
+		ServerHost:   host,
+		ServerPort:   port,
+		ServerSocket: socket,
+		AutoStart:    false,
+	}
+
+	_, err := newServerMode(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected connection error from unreachable TCP endpoint")
+	}
+	if cfg.ServerSocket != "" {
+		t.Fatalf("expected server mode to select TCP fallback, socket = %q", cfg.ServerSocket)
+	}
+	wantCalls := []probeCall{
+		{network: "unix", addr: socket},
+		{network: "tcp", addr: tcpAddr},
+	}
+	if !reflect.DeepEqual(*calls, wantCalls) {
+		t.Errorf("probe calls = %v, want %v", *calls, wantCalls)
+	}
+}
+
+func TestNewServerMode_NoSocketDoesNotProbe(t *testing.T) {
+	t.Setenv("BEADS_TEST_MODE", "1")
+	calls := withStubbedDialProbe(t, map[string]bool{})
+	cfg := &Config{
+		Database:   "test_socket_fallback_no_socket",
+		ServerHost: "127.0.0.1",
+		ServerPort: 1, // expected to be unreachable for the eventual real connection dial
+		AutoStart:  false,
+	}
+
+	_, err := newServerMode(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected connection error from unreachable TCP endpoint")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("expected no probes without a configured socket, got %v", *calls)
 	}
 }
