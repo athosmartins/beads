@@ -56,6 +56,15 @@ type Issue struct {
 	// below (json:"-", never serialized).
 	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"` // When the current claim's lease expires
 	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`     // Last heartbeat from the lease owner
+	// LeaseGrantedNode names the replica that granted the lease
+	// (config.NodeID() at claim time). A lease is only enforceable there: on
+	// any other replica the liveness view is stale by up to one sync interval,
+	// so reclaim refuses a positively-foreign lease unless explicitly
+	// overridden. Empty means "provenance unknown" (a pre-0016 lease row, or a
+	// deployment that cannot name its replicas), which is treated as local.
+	// It rides the JSONL interchange so an imported lease keeps its true
+	// granting replica.
+	LeaseGrantedNode string `json:"lease_granted_node,omitempty"`
 
 	// ===== Concurrency (Go-only; never serialized) =====
 	// RowVersion is an opaque optimistic-concurrency token for the library's own
@@ -872,6 +881,14 @@ type IssueDetails struct {
 	DependencyCount *int64 `json:"dependency_count,omitempty"`
 	CommentCount    *int64 `json:"comment_count,omitempty"`
 
+	// CommentsOmitted is set true only when CommentCount is nonzero AND
+	// Comments was left nil (count-only mode, no --include-comments). Without
+	// it, a positive CommentCount with no Comments key reads as a client bug,
+	// and a caller checking only `.comments` sees `null`/absent and concludes
+	// "no comments" — both wrong (ga-clgh). Never set alongside a populated
+	// Comments slice or a zero count: a true empty stays plain omission.
+	CommentsOmitted *bool `json:"comments_omitted,omitempty"`
+
 	// Epic progress fields (populated only for issue_type=epic with children)
 	EpicTotalChildren  *int  `json:"epic_total_children,omitempty"`
 	EpicClosedChildren *int  `json:"epic_closed_children,omitempty"`
@@ -1590,10 +1607,21 @@ type ReclaimFilter struct {
 	Labels        []string // AND semantics: issue must have ALL these labels
 	LabelsAny     []string // OR semantics: issue must have AT LEAST ONE of these labels
 	ExcludeLabels []string // Exclusion: issue must NOT have ANY of these labels
+
+	// AnyReplica is the one field here that WIDENS rather than narrows: it
+	// disarms the granting-replica guard, letting this reaper revert a lease
+	// another replica granted (see issueops.ReclaimExpiredLeasesInTx). It is
+	// an operator escape hatch for a permanently-departed replica or a
+	// renamed node, never a normal setting — the machine that granted a lease
+	// is the only one with a first-hand view of whether its holder is alive.
+	// It does NOT widen past staleness or past the scope fields above.
+	AnyReplica bool
 }
 
 // IsEmpty reports whether the filter constrains nothing, i.e. reclaim runs in
-// its global, unscoped form.
+// its global, unscoped form. AnyReplica is deliberately excluded: it is an
+// override, not a scope, so a reaper reporting "scoped" still means "narrowed
+// to a partition".
 func (f ReclaimFilter) IsEmpty() bool {
 	return len(f.IDs) == 0 && len(f.Assignees) == 0 &&
 		len(f.Labels) == 0 && len(f.LabelsAny) == 0 && len(f.ExcludeLabels) == 0

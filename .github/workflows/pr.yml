@@ -19,7 +19,7 @@ jobs:
     name: Build Artifacts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
@@ -72,7 +72,7 @@ jobs:
     name: Check build-tag policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - run: ./scripts/check-build-tags.sh
       - run: ./scripts/check-go-install-guidance.sh
 
@@ -87,7 +87,7 @@ jobs:
     name: Check cmd/bd pure-Go tests compile (CGO_ENABLED=0)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -122,7 +122,7 @@ jobs:
     name: Check version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Check all versions match
         run: ./scripts/check-versions.sh
@@ -136,7 +136,7 @@ jobs:
     name: Check migration hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
@@ -150,7 +150,7 @@ jobs:
     name: Check doc flags freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           # Full history so check-cli-docs-drift.sh can regenerate docs at the
           # merge-base and only fail PRs for drift they actually introduced.
@@ -184,13 +184,33 @@ jobs:
           path: ${{ runner.temp }}/cli-docs-freshness.patch
           if-no-files-found: ignore
 
+  pr-preflight-platforms:
+    name: PR preflight process (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Exercise the real Bash process boundary
+        shell: bash
+        run: go test '-tags=integration,gms_pure_go' -count=1 -run '^TestPRPreflight' ./scripts
+
   # Fast check to catch accidental .beads/issues.jsonl changes from contributors
   check-no-beads-changes:
     name: Check for .beads changes
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
@@ -218,7 +238,7 @@ jobs:
       npm_package: ${{ steps.detect.outputs.npm_package }}
       reason: ${{ steps.detect.outputs.reason }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
@@ -244,7 +264,7 @@ jobs:
             echo "MCP package gate is not applicable: ${{ needs.detect-package-gates.outputs.reason }}"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         if: steps.applicability.outputs.run == 'true'
 
       - name: Set up Python
@@ -291,7 +311,7 @@ jobs:
             echo "npm package gate is not applicable: ${{ needs.detect-package-gates.outputs.reason }}"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         if: steps.applicability.outputs.run == 'true'
 
       - name: Set up Node.js
@@ -326,7 +346,7 @@ jobs:
     name: PR Policy (wrapper timing)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
@@ -343,7 +363,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-artifacts
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -382,7 +402,7 @@ jobs:
     name: PR Lint (wrapper timing)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -406,7 +426,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-artifacts
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -470,7 +490,7 @@ jobs:
     name: Contract corpus (golden + determinism + conformance)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -507,7 +527,7 @@ jobs:
     name: Check formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -521,7 +541,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -545,7 +565,7 @@ jobs:
           - msys2
           - cygwin
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Install native GNU Make
         if: matrix.host == 'native'
@@ -726,6 +746,7 @@ jobs:
       - check-version-consistency
       - check-migration-hygiene
       - check-doc-flags
+      - pr-preflight-platforms
       - check-no-beads-changes
       - detect-package-gates
       - package-mcp
@@ -740,7 +761,7 @@ jobs:
       - windows-make-shell
     if: ${{ always() }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Evaluate CI gate
         env:
@@ -752,6 +773,7 @@ jobs:
             CHECK_VERSION_CONSISTENCY
             CHECK_MIGRATION_HYGIENE
             CHECK_DOC_FLAGS
+            PR_PREFLIGHT_PLATFORMS
             CHECK_NO_BEADS_CHANGES
             DETECT_PACKAGE_GATES
             PACKAGE_MCP
@@ -770,6 +792,7 @@ jobs:
           CHECK_VERSION_CONSISTENCY: ${{ needs.check-version-consistency.result }}
           CHECK_MIGRATION_HYGIENE: ${{ needs.check-migration-hygiene.result }}
           CHECK_DOC_FLAGS: ${{ needs.check-doc-flags.result }}
+          PR_PREFLIGHT_PLATFORMS: ${{ needs.pr-preflight-platforms.result }}
           CHECK_NO_BEADS_CHANGES: ${{ needs.check-no-beads-changes.result }}
           DETECT_PACKAGE_GATES: ${{ needs.detect-package-gates.result }}
           PACKAGE_MCP: ${{ needs.package-mcp.result }}
