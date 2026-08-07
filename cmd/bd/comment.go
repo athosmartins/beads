@@ -8,6 +8,46 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 )
 
+// commentReservedIDWords are "comments" subcommand names that must never be
+// silently accepted as the <id> positional of "bd comment" (singular). They
+// exist so a typo'd plural form — "bd comment list <id>", meant to be
+// "bd comments list" / "bd comments <id>" — fails loudly instead of treating
+// "list" as the id and the real id as comment text.
+//
+// This is not a hypothetical: 15+ automated sessions in one deployment made
+// exactly this typo over two days, and because "list" happened to be a
+// leading-prefix abbreviation of an unrelated wisp's hash ("list3t0"), each
+// one silently wrote a garbage comment onto that wisp instead of erroring.
+// The word list mirrors the real "comments" subcommand (add) plus the other
+// verbs a "comments <verb>" typo is likely to produce.
+var commentReservedIDWords = map[string]bool{
+	"list":   true,
+	"add":    true,
+	"rm":     true,
+	"delete": true,
+}
+
+// checkCommentIDNotReservedWord rejects an id argument that is one of
+// commentReservedIDWords, with a message pointing at the "bd comments"
+// subcommand the caller most likely meant. Pure and side-effect free so it
+// can run before either the direct or proxied-server RunE branch, and be
+// unit tested without a store.
+func checkCommentIDNotReservedWord(id string) error {
+	if !commentReservedIDWords[id] {
+		return nil
+	}
+	return HandleErrorRespectJSON(`%q is not a valid issue id — it looks like a misplaced "bd comments" subcommand.
+
+To list comments:
+  bd comments <issue-id>
+
+To add a comment:
+  bd comment <issue-id> "text"
+  bd comments add <issue-id> "text"
+
+See: bd comment --help`, id)
+}
+
 // validateCommentArgs runs as cobra's Args validation for the singular
 // "comment" shorthand, before RunE's usesProxiedServer() dispatch and (on
 // the local/embedded path) before the id ever reaches ResolvePartialID's
@@ -45,7 +85,12 @@ To add a comment:
 
 See: bd comment --help`)
 	}
-	return nil
+	// The two cases above carry hand-written messages for the two typos that
+	// were actually reported. The remaining reserved words ("rm", "delete") are
+	// the same class of mistake — a misplaced "bd comments" subcommand used as
+	// the id — and get the generic message. Keeping the whole set in
+	// commentReservedIDWords also keeps the check unit-testable on its own.
+	return checkCommentIDNotReservedWord(args[0])
 }
 
 var commentCmd = &cobra.Command{
@@ -96,7 +141,7 @@ To list comments on an issue, use the plural form: bd comments <id>`,
 
 		ctx := rootCtx
 
-		result, err := resolveAndGetIssueForMutation(ctx, store, id)
+		result, err := resolveAndGetIssueForMutationExact(ctx, store, id)
 		if err != nil {
 			if result != nil {
 				result.Close()
