@@ -323,14 +323,28 @@ func HeartbeatIssueInTx(ctx context.Context, tx DBTX, id, actor string) error {
 		if qerr != nil {
 			return fmt.Errorf("%w: %s", storage.ErrNotClaimable, id)
 		}
-		if assignee != "" && assignee != actor {
+		// Judged under actorMatches, not verbatim (ga-v2k49): the primary
+		// UPDATE's own `holder = ?` predicate above stays a verbatim SQL
+		// comparison deliberately — fixing it would mean pre-reading the
+		// lease row on every heartbeat (the hottest write in the fleet, see
+		// above) just to bind back its own holder value. A spelling
+		// difference across layers (ga-wzl83) already makes that predicate
+		// affect 0 rows and fall here; fixing the disambiguation instead
+		// means the caller still self-heals correctly (re-arms below, under
+		// its current spelling) at the cost of the slow path on a spelling
+		// mismatch, never on the byte-identical common case.
+		if assignee != "" && !actorMatches(assignee, actor) {
 			return fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, assignee)
 		}
-		if !isWisp && assignee == actor && status == string(types.StatusInProgress) {
+		if !isWisp && actorMatches(assignee, actor) && status == string(types.StatusInProgress) {
 			// The caller genuinely holds the claim but has no lease row — e.g.
 			// the claim was hand-doled through a generic update (which never
-			// arms a lease, bd-9hpgf) and the worker is now opting into lease
-			// semantics. A real worker's heartbeat re-arms recovery.
+			// arms a lease, bd-9hpgf), the worker is now opting into lease
+			// semantics, or (ga-v2k49) the existing lease row's holder is a
+			// different spelling of the same identity (ga-wzl83) and the
+			// primary UPDATE's verbatim predicate above missed it. A real
+			// worker's heartbeat re-arms recovery — under actor's current
+			// spelling, which is what the next heartbeat's fast path will see.
 			return UpsertLeaseInTx(ctx, tx, id, actor, now, leaseTTL(ctx))
 		}
 		return fmt.Errorf("%w: %s status %s", storage.ErrNotClaimable, id, status)
