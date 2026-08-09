@@ -182,6 +182,13 @@ func (s *serveIdentityStore) Close() error { return nil }
 // They hand back serveIdentityRole, which satisfies each interface by
 // EMBEDDING it rather than implementing it: non-nil, so the set is complete,
 // while an actual call panics naming the method it reached.
+func (*serveIdentityStore) BatchCloser() (issueops.BatchCloser, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) Releaser() (issueops.Releaser, error) { return serveIdentityRole{}, nil }
 func (*serveIdentityStore) IssueLifecycle() (issueops.Lifecycle, error) {
 	return serveIdentityRole{}, nil
 }
@@ -227,6 +234,9 @@ func (*serveIdentityStore) MetadataCAS() (issueops.MetadataCAS, error) {
 // being promoted and the build would say so.
 type serveIdentityRole struct {
 	issueops.Lifecycle
+	issueops.Releaser
+	issueops.ReadyClaimer
+	issueops.BatchCloser
 	issueops.MetadataCAS
 	issueops.WorkspaceConfig
 	issueops.StatsReporter

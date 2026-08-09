@@ -96,6 +96,9 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		return &serveRolesStore{
 			reader:       &serveStubReader{},
 			claimer:      &serveStubClaimer{},
+			batchCloser:  &serveStubBatchCloser{},
+			readyClaimer: &serveStubReadyClaimer{},
+			releaser:     &serveStubReleaser{},
 			lifecycle:    &serveStubLifecycle{},
 			dependencies: &serveStubDependencyEditor{},
 			batchApplier: &serveStubBatchApplier{},
@@ -164,9 +167,26 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		t.Fatal("the store's own accessor no longer returns a hook-firing compare-and-set; this test proves nothing")
 	}
 
+	// And for the releaser, the SIXTH. Its case in the RoleFiresHooks switch
+	// would otherwise be held only by a comment, which is exactly how the
+	// compare-and-set's case above spent time silently empty.
+	releaserFromTheStore, err := chained.Releaser()
+	if err != nil {
+		t.Fatalf("Releaser: %v", err)
+	}
+	if !storage.RoleFiresHooks(releaserFromTheStore) {
+		t.Fatal("the store's own accessor no longer returns a hook-firing releaser; this test proves nothing")
+	}
+
 	roles, err := serveIssueRoles(chained, false)
 	if err != nil {
 		t.Fatalf("serveIssueRoles: %v", err)
+	}
+	if storage.RoleFiresHooks(roles.releaser) {
+		t.Error("bd serve would run this workspace's hooks on every HTTP release")
+	}
+	if roles.releaser != issueops.Releaser(middle.releaser) {
+		t.Errorf("releaser came from %p, want the layer directly beneath the hooks (%p)", roles.releaser, middle.releaser)
 	}
 	reader, claimer := roles.reader, roles.claimer
 	// The same predicate httpapi.Listen refuses on, so a regression here is a
@@ -319,6 +339,9 @@ type serveRolesStore struct {
 	storage.DoltStorage
 	reader       *serveStubReader
 	claimer      *serveStubClaimer
+	batchCloser  *serveStubBatchCloser
+	readyClaimer *serveStubReadyClaimer
+	releaser     *serveStubReleaser
 	lifecycle    *serveStubLifecycle
 	dependencies *serveStubDependencyEditor
 	batchApplier *serveStubBatchApplier
@@ -329,6 +352,15 @@ type serveRolesStore struct {
 func (s *serveRolesStore) IssueReader() (issueops.Reader, error)   { return s.reader, nil }
 func (s *serveRolesStore) IssueClaimer() (issueops.Claimer, error) { return s.claimer, nil }
 func (s *serveRolesStore) Unwrap() storage.DoltStorage             { return s.inner }
+
+func (s *serveRolesStore) BatchCloser() (issueops.BatchCloser, error)   { return s.batchCloser, nil }
+func (s *serveRolesStore) ReadyClaimer() (issueops.ReadyClaimer, error) { return s.readyClaimer, nil }
+
+// Releaser carries an identifiable value for the same reason, and it is the
+// SIXTH role the decorator wraps: a peel of the wrong depth would hand bd serve
+// a releaser that runs the workspace's hooks once per claim it frees — which a
+// reaper draining abandoned work does in a tight loop.
+func (s *serveRolesStore) Releaser() (issueops.Releaser, error) { return s.releaser, nil }
 
 // IssueLifecycle carries an identifiable value for the same reason the reader
 // and the claimer do: it is one of the roles the hook decorator wraps, so a peel
@@ -389,6 +421,27 @@ type serveStubClaimer struct{}
 
 func (*serveStubClaimer) Claim(context.Context, issueops.ClaimRequest) (issueops.ClaimResult, error) {
 	return issueops.ClaimResult{}, errors.ErrUnsupported
+}
+
+// serveStubReadyClaimer is one of the roles the hook decorator does NOT wrap,
+// so it carries no identifiable-value assertion below: this stub exists so the
+// role set is complete.
+type serveStubBatchCloser struct{}
+
+func (*serveStubBatchCloser) CloseBatch(context.Context, issueops.CloseBatchRequest) (issueops.CloseBatchResult, error) {
+	return issueops.CloseBatchResult{}, errors.ErrUnsupported
+}
+
+type serveStubReadyClaimer struct{}
+
+func (*serveStubReadyClaimer) ClaimNext(context.Context, issueops.ClaimNextRequest) (issueops.ClaimNextResult, error) {
+	return issueops.ClaimNextResult{}, errors.ErrUnsupported
+}
+
+type serveStubReleaser struct{}
+
+func (*serveStubReleaser) Release(context.Context, issueops.ReleaseRequest) (issueops.ReleaseResult, error) {
+	return issueops.ReleaseResult{}, errors.ErrUnsupported
 }
 
 type serveStubLifecycle struct{}
