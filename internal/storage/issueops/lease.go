@@ -259,6 +259,16 @@ func RestoreLeaseOnImportInTx(ctx context.Context, tx DBTX, issue *types.Issue, 
 	// An upsert over an existing row may have ended or transferred the claim
 	// (e.g. a newer snapshot closed the issue): drop a lease row that no
 	// longer matches a live claim by its holder.
+	//
+	// This join is a SQL equality (i.assignee = leases.holder), not
+	// actorMatches — a query predicate can't canonicalize across a join the
+	// way Go code can, so a lease granted under one spelling of an identity
+	// can be dropped here if the issue's stored assignee is later written
+	// under a different, equivalent spelling (ga-v2k49). Bounded and
+	// self-healing: HeartbeatIssueInTx's disambiguation fallback re-arms the
+	// lease under the caller's current spelling on the next beat, so the gap
+	// is one issue briefly in_progress with no lease row (visible to
+	// stale/reclaim reads), never a stuck state.
 	if !isNew {
 		_, err := tx.ExecContext(ctx, `
 			DELETE FROM leases WHERE issue_id = ?

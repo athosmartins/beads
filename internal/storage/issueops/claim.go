@@ -82,7 +82,12 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 	// spelling-sensitive SQL predicate (ga-v2k49, same shape as ga-5ksp5's
 	// unclaim.go fix): empty/unassigned, already this actor — including an
 	// idempotent re-claim spelled under a different layer's separator
-	// convention (ga-wzl83) — or assigned to a claim-pool alias.
+	// convention (ga-wzl83) — or assigned to a claim-pool alias. That last
+	// membership test is deliberately exact-string, unlike actorMatches right
+	// beside it: a pool alias (e.g. "fable-crew") is a literal claim.pools
+	// config value, not a Gas Town identity that gets respelled per layer, so
+	// there is no cross-spelling variant to reconcile — canonicalizing it
+	// could only blur two administratively-distinct pool names into one.
 	assigneeOK := oldIssue.Assignee == "" || actorMatches(oldIssue.Assignee, actor) || slices.Contains(pools, oldIssue.Assignee)
 
 	// Conditional UPDATE: only attempted while the issue was still claimable
@@ -160,6 +165,9 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			// non-assignee reason (status changed underneath us): report the
 			// status rather than a misleading held-by-someone refusal. Checked
 			// FIRST, so a pool alias never falls into the holder-steering copy.
+			// Exact-string membership, same reason as assigneeOK's identical
+			// term above: a pool alias is a literal config value, not a
+			// respelled identity.
 			case slices.Contains(pools, assignee):
 				// refusal already names the status.
 			case currentStatus == types.StatusOpen:
