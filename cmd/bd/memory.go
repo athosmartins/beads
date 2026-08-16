@@ -258,6 +258,7 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("remember")
+		CheckMigrationFreeze("remember")
 
 		evt := metrics.NewCommandEvent("remember")
 		defer func() {

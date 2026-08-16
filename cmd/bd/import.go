@@ -117,6 +117,8 @@ func init() {
 }
 
 func runImport(cmd *cobra.Command, args []string) error {
+	CheckMigrationFreeze("import")
+
 	evt := metrics.NewCommandEvent("import")
 	defer func() {
 		if c := metrics.Global(); c != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/migration"
 )
 
 type exitError struct {
@@ -136,4 +137,36 @@ func CheckReadonly(operation string) {
 		metrics.CloseAndFlush()
 		os.Exit(1)
 	}
+}
+
+// CheckMigrationFreeze aborts the command when a MIGRATION-FREEZE sentinel is
+// present at the town root (dc-6jaq). The gt CLI already refuses to write
+// under the same sentinel (gt mail send, gt nudge, gt sling, gt assign);
+// mail-poller/daemon patrols that also write via bd are stopped separately
+// via the migration playbook's plist-unload step, so this closes the
+// remaining gap: a human typing 'bd create'/'bd update' etc. mid-migration,
+// bypassing the gt-layer gate. Same exit-via-os.Exit tradeoff as
+// CheckReadonly above — no cli_command event for a command blocked here,
+// but queued metrics are still flushed.
+func CheckMigrationFreeze(operation string) {
+	townRoot := findTownRoot()
+	if !migration.IsFrozen(townRoot) {
+		return
+	}
+
+	info := migration.Read(townRoot)
+	operator := "unknown"
+	reason := ""
+	if info != nil {
+		operator = info.Operator
+		reason = info.Reason
+	}
+
+	fmt.Fprintf(os.Stderr, "⛔ ERROR: town is frozen for migration (by %s).\n", operator)
+	if reason != "" {
+		fmt.Fprintf(os.Stderr, "   Reason: %s\n", reason)
+	}
+	fmt.Fprintf(os.Stderr, "   bd %s is blocked. Clear the freeze: gt migrate thaw\n", operation)
+	metrics.CloseAndFlush()
+	os.Exit(1)
 }

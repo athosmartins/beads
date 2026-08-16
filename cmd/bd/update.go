@@ -100,6 +100,7 @@ pointless).`,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("update")
+		CheckMigrationFreeze("update")
 
 		evt := metrics.NewCommandEvent("update")
 		defer func() {

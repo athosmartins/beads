@@ -50,6 +50,7 @@ the flags appear in the command line.`,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("close")
+		CheckMigrationFreeze("close")
 
 		evt := metrics.NewCommandEvent("close")
 		defer func() {
