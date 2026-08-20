@@ -54,7 +54,11 @@ func Read(townRoot string) *Info {
 func parse(content string) *Info {
 	content = strings.TrimSpace(content)
 	if content == "" {
-		return &Info{Timestamp: time.Now()}
+		// No recorded timestamp to parse (e.g. an empty sentinel file, such
+		// as one created with `touch`) — leave Timestamp at its zero value
+		// rather than fabricating "now": a caller that ever inspects it
+		// should not be told the freeze started at check-time.
+		return &Info{}
 	}
 	parts := strings.SplitN(content, "\t", 3)
 	info := &Info{}

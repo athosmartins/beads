@@ -49,8 +49,7 @@ the flags appear in the command line.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		CheckReadonly("close")
-		CheckMigrationFreeze("close")
+		CheckReadonly("close") // also covers CheckMigrationFreeze (dc-6jaq)
 
 		evt := metrics.NewCommandEvent("close")
 		defer func() {

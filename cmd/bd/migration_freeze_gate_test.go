@@ -46,9 +46,17 @@ func migrationFreezeEnv(dir string) []string {
 // exits are returned to the caller for assertion.
 func runBDMigrationFreeze(t *testing.T, bd, dir string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runBDMigrationFreezeWithEnv(t, bd, dir, nil, args...)
+}
+
+// runBDMigrationFreezeWithEnv is runBDMigrationFreeze plus caller-supplied
+// environment variables layered on top of the hermetic base env (e.g.
+// BD_DEBUG=1, for tests that need to observe debug.Logf output).
+func runBDMigrationFreezeWithEnv(t *testing.T, bd, dir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 	cmd := exec.Command(bd, args...)
 	cmd.Dir = dir
-	cmd.Env = migrationFreezeEnv(dir)
+	cmd.Env = append(migrationFreezeEnv(dir), extraEnv...)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -167,5 +175,121 @@ func TestCreateNotBlockedWithoutFreeze(t *testing.T) {
 	}
 	if issue.ID == "" {
 		t.Fatalf("bd create --json returned no id:\n%s", stdout)
+	}
+}
+
+// TestQuickBlockedDuringMigrationFreeze regression-checks the sharpest gap
+// flagged in review of the original gate (dc-6jaq, PR #5826): the gate
+// hand-picked five commands (create, update, close, remember, import), but
+// "bd q" (quick.go) is create's own documented shorthand and called
+// CheckReadonly directly rather than going through create's RunE — so it
+// was never gated even though create was. Now that CheckReadonly itself
+// folds in the freeze check, every one of its ~120 call sites is covered
+// automatically, "q" included.
+func TestQuickBlockedDuringMigrationFreeze(t *testing.T) {
+	bd, dir := setupMigrationFreezeWorkspace(t)
+	freezeTown(t, dir, "mayor", "dolt v2 migration")
+
+	stdout, stderr, code := runBDMigrationFreeze(t, bd, dir, "q", "should not be created")
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "frozen for migration") {
+		t.Errorf("stderr missing 'frozen for migration':\n%s", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("stdout should be empty when blocked, got:\n%s", stdout)
+	}
+}
+
+// TestLabelAddBlockedDuringMigrationFreeze checks a second, unrelated write
+// command that was never part of the original hand-picked five either —
+// evidence the fold-into-CheckReadonly fix covers the write surface
+// generally, not just the one bypass ("bd q") review happened to name.
+func TestLabelAddBlockedDuringMigrationFreeze(t *testing.T) {
+	bd, dir := setupMigrationFreezeWorkspace(t)
+
+	stdout, stderr, code := runBDMigrationFreeze(t, bd, dir, "create", "pre-freeze issue for label", "-p", "2", "--json")
+	if code != 0 {
+		t.Fatalf("setup bd create failed (exit %d):\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	var issue struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &issue); err != nil || issue.ID == "" {
+		t.Fatalf("parsing create --json output: %v\n%s", err, stdout)
+	}
+
+	freezeTown(t, dir, "mayor", "dolt v2 migration")
+
+	stdout, stderr, code = runBDMigrationFreeze(t, bd, dir, "label", "add", issue.ID, "should-not-be-added")
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "frozen for migration") {
+		t.Errorf("stderr missing 'frozen for migration':\n%s", stderr)
+	}
+}
+
+// TestAutoMigrateSkippedDuringMigrationFreeze is the structural ordering
+// check (dc-6jaq review, ask #2): a frozen write must be blocked before
+// PersistentPreRunE's own store-touching side effects run, not after, from
+// inside the write command's own RunE. autoMigrateOnVersionBump
+// (version_tracking.go) opens its own store connection and can apply a real
+// schema migration — the most dangerous write in this path — and ran
+// unconditionally for every non-preview command before this fix, freeze or
+// not.
+//
+// An old .local_version forces trackBdVersion to detect a version "bump" so
+// autoMigrateOnVersionBump's body actually does something observable
+// instead of short-circuiting on "no upgrade detected" — then BD_DEBUG=1
+// surfaces its unconditional "auto-migrate:"-prefixed debug.Logf lines, so
+// their absence is direct evidence the function was never entered.
+func TestAutoMigrateSkippedDuringMigrationFreeze(t *testing.T) {
+	bd, dir := setupMigrationFreezeWorkspace(t)
+
+	localVersionPath := filepath.Join(dir, ".beads", localVersionFile)
+	if err := os.WriteFile(localVersionPath, []byte("0.0.1\n"), 0644); err != nil {
+		t.Fatalf("writing fake old %s: %v", localVersionFile, err)
+	}
+
+	freezeTown(t, dir, "mayor", "dolt v2 migration")
+
+	stdout, stderr, code := runBDMigrationFreezeWithEnv(t, bd, dir, []string{"BD_DEBUG=1"},
+		"create", "should not be created", "-p", "2")
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "frozen for migration") {
+		t.Errorf("stderr missing 'frozen for migration':\n%s", stderr)
+	}
+	if strings.Contains(stderr, "auto-migrate:") {
+		t.Errorf("autoMigrateOnVersionBump ran its store-opening body during a freeze (found an "+
+			"'auto-migrate:' debug log line in stderr) — the freeze check must fire before it, "+
+			"not after, from inside create's own RunE:\n%s", stderr)
+	}
+}
+
+// TestAutoMigrateStillRunsWithoutFreeze is the companion regression-safety
+// check for the ask-#2 fix: without a freeze sentinel, the new early gate in
+// PersistentPreRunE must not interfere with autoMigrateOnVersionBump's normal
+// version-bump reconciliation.
+func TestAutoMigrateStillRunsWithoutFreeze(t *testing.T) {
+	bd, dir := setupMigrationFreezeWorkspace(t)
+
+	localVersionPath := filepath.Join(dir, ".beads", localVersionFile)
+	if err := os.WriteFile(localVersionPath, []byte("0.0.1\n"), 0644); err != nil {
+		t.Fatalf("writing fake old %s: %v", localVersionFile, err)
+	}
+
+	stdout, stderr, code := runBDMigrationFreezeWithEnv(t, bd, dir, []string{"BD_DEBUG=1"},
+		"create", "normal issue", "-p", "2", "--json")
+
+	if code != 0 {
+		t.Fatalf("bd create failed (exit %d) with no freeze sentinel present:\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "auto-migrate:") {
+		t.Errorf("expected autoMigrateOnVersionBump to run (an 'auto-migrate:' debug log line) when not frozen, got none:\nstderr:\n%s", stderr)
 	}
 }

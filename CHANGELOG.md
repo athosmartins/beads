@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Write commands now refuse to run while a MIGRATION-FREEZE sentinel sits
+  at the town root** (dc-6jaq), mirroring the gate the gt CLI already applies
+  to `gt mail send`/`nudge`/`sling`/`assign`. `bd create`/`update`/`close`/
+  `remember`/`import` and every other command gated by `CheckReadonly`
+  (~120 call sites, `bd q` included) now print `⛔ town is frozen for
+  migration (by <operator>)` and exit 1 instead of writing to a store mid-
+  migration. The check runs twice: once early in the root command, before
+  version-bump auto-migration or JSONL auto-import can touch the store, and
+  again at each write command's own chokepoint. Read commands (`list`,
+  `show`, `ready`, …) and `--dry-run`/`--inspect` previews are unaffected —
+  diagnosis must still work during a freeze. Clear the freeze with
+  `gt migrate thaw`.
+
 - **`bd reclaim` summarizes the leases its replica guard declined instead of
   naming every one, every run** (wy-sp2l4). A lease granted by another replica
   is by construction never reclaimed here, so the audit was not a one-off: it

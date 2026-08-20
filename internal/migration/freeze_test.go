@@ -59,6 +59,24 @@ func TestReadNotFrozenReturnsNil(t *testing.T) {
 	}
 }
 
+func TestReadEmptyContentDoesNotFabricateTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(FilePath(dir), []byte(""), 0644); err != nil {
+		t.Fatalf("writing empty sentinel: %v", err)
+	}
+
+	info := Read(dir)
+	if info == nil {
+		t.Fatalf("Read(%q) = nil for empty-but-present sentinel, want non-nil Info", dir)
+	}
+	if !info.Timestamp.IsZero() {
+		t.Errorf("Timestamp = %v, want zero value (no recorded timestamp to report — must not fabricate one)", info.Timestamp)
+	}
+	if info.Operator != "" || info.Reason != "" {
+		t.Errorf("Operator/Reason = %q/%q, want both empty for an empty sentinel", info.Operator, info.Reason)
+	}
+}
+
 func TestReadMalformedContentDoesNotPanic(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(FilePath(dir), []byte("not tab separated at all"), 0644); err != nil {

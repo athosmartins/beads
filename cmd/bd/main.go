@@ -1378,6 +1378,25 @@ var rootCmd = &cobra.Command{
 		policy := effectiveRootStorePolicy(cmd.Name(), readonlyMode)
 		useReadOnly := policy.readOnly || previewMode
 
+		// dc-6jaq: consult the MIGRATION-FREEZE sentinel here, before any of
+		// this hook's own store-touching side effects — trackBdVersion below
+		// (writes .local_version), autoMigrateOnVersionBump (opens its own
+		// store connection and can apply a schema migration), and
+		// maybeAutoImportJSONL (imports into the store when empty) all run
+		// before the command's RunE, where CheckReadonly would otherwise
+		// catch a frozen write first. By then the most dangerous writes this
+		// gate exists to prevent would already be done. useReadOnly already
+		// carries the exact classification a freeze must not block (strict
+		// --readonly, a command on the read-only allowlist, or an explicit
+		// --dry-run/--inspect preview) — reusing it here means there is no
+		// second, independently-maintained list of "write" commands to drift
+		// out of sync with the one useReadOnly is built from. CheckReadonly
+		// (and therefore this same freeze check) still runs again per-command
+		// once RunE is reached; this is the earlier, store-open-safe half.
+		if !useReadOnly {
+			CheckMigrationFreeze(strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" "))
+		}
+
 		// Track bd version changes unless strict readonly forbids repository mutation.
 		// Best-effort tracking - failures are silent.
 		//
