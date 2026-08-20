@@ -23,6 +23,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payload is unchanged. Under `--quiet` the audit now skips its queries
   entirely rather than running them to discard the output.
 
+### Fixed
+
+- **`bd show` on a deleted or purged issue no longer prints text identical to
+  an ID that never existed** (ga-m6inyb). `bd delete` and wisp `purge` both
+  remove a row (and its `events`) from the live tables with no trace left
+  behind, so "not found" was collapsing two states that call for opposite
+  responses — archived (success) and never-existed (possibly lost data) —
+  into one observable. This had a real cost: a gate-reviewer session showed
+  a legitimate issue successfully, hit an unrelated mysql i/o timeout on a
+  retry moments later, got the identical "not found" text for the same ID,
+  and reasonably concluded data had been lost — when the issue had simply
+  been archived in between. `bd show` on a missing ID now adds a second
+  line — `Hint: this ID may have never existed, or may reference a
+  deleted/purged record with no trace left in the live database — try 'bd
+  history <id>'` — pointing at the existing, opt-in `bd history <id>` for
+  anyone who wants to check further on a non-wisp issue (wisps are never
+  committed to history, purged or not, so there is no signal left to
+  recover for them). JSON output gains an additive `hint` field; the
+  existing `error` text is unchanged. **Direct-mode text output changes for
+  one path**: the single-ID not-found branch's first line changes from
+  `Error fetching <id>: no issue found matching "<id>"` to `Issue <id> not
+  found`, matching the wording the multi-ID and proxied-mode paths already
+  used (those two are unchanged aside from gaining the new second `Hint:`
+  line).
+
 ### Documentation
 
 - **The heartbeat/re-home invariant and the two states it can strand are now
