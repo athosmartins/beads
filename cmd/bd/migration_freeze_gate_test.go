@@ -245,29 +245,63 @@ func TestLabelAddBlockedDuringMigrationFreeze(t *testing.T) {
 // instead of short-circuiting on "no upgrade detected" — then BD_DEBUG=1
 // surfaces its unconditional "auto-migrate:"-prefixed debug.Logf lines, so
 // their absence is direct evidence the function was never entered.
+//
+// The "list" case is review round 2's ask #1: a command classified
+// read-only must NOT be blocked (diagnosis has to keep working during a
+// freeze — exit 0, no refusal), but the same two maintenance side effects
+// must still be skipped, because they are this hook's own writes and run
+// independently of the command's classification. Reproduced pre-fix:
+// freeze the town, seed .local_version with a stale version, run
+// `BD_DEBUG=1 bd list` — exit 0, but the "auto-migrate:" line appeared and
+// .local_version was rewritten to the current version anyway.
 func TestAutoMigrateSkippedDuringMigrationFreeze(t *testing.T) {
-	bd, dir := setupMigrationFreezeWorkspace(t)
-
-	localVersionPath := filepath.Join(dir, ".beads", localVersionFile)
-	if err := os.WriteFile(localVersionPath, []byte("0.0.1\n"), 0644); err != nil {
-		t.Fatalf("writing fake old %s: %v", localVersionFile, err)
+	tests := []struct {
+		name        string
+		args        []string
+		wantExit    int
+		wantBlocked bool
+	}{
+		{name: "create", args: []string{"create", "should not be created", "-p", "2"}, wantExit: 1, wantBlocked: true},
+		{name: "list", args: []string{"list"}, wantExit: 0, wantBlocked: false},
 	}
 
-	freezeTown(t, dir, "mayor", "dolt v2 migration")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bd, dir := setupMigrationFreezeWorkspace(t)
 
-	stdout, stderr, code := runBDMigrationFreezeWithEnv(t, bd, dir, []string{"BD_DEBUG=1"},
-		"create", "should not be created", "-p", "2")
+			localVersionPath := filepath.Join(dir, ".beads", localVersionFile)
+			if err := os.WriteFile(localVersionPath, []byte("0.0.1\n"), 0644); err != nil {
+				t.Fatalf("writing fake old %s: %v", localVersionFile, err)
+			}
 
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "frozen for migration") {
-		t.Errorf("stderr missing 'frozen for migration':\n%s", stderr)
-	}
-	if strings.Contains(stderr, "auto-migrate:") {
-		t.Errorf("autoMigrateOnVersionBump ran its store-opening body during a freeze (found an "+
-			"'auto-migrate:' debug log line in stderr) — the freeze check must fire before it, "+
-			"not after, from inside create's own RunE:\n%s", stderr)
+			freezeTown(t, dir, "mayor", "dolt v2 migration")
+
+			stdout, stderr, code := runBDMigrationFreezeWithEnv(t, bd, dir, []string{"BD_DEBUG=1"}, tt.args...)
+
+			if code != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, tt.wantExit, stdout, stderr)
+			}
+			if tt.wantBlocked && !strings.Contains(stderr, "frozen for migration") {
+				t.Errorf("stderr missing 'frozen for migration':\n%s", stderr)
+			}
+			if strings.Contains(stderr, "auto-migrate:") {
+				t.Errorf("autoMigrateOnVersionBump ran its store-opening body during a freeze (found an "+
+					"'auto-migrate:' debug log line in stderr) — the freeze check must skip it while "+
+					"frozen regardless of whether the command itself is a read or a write:\n%s", stderr)
+			}
+
+			// The skip must be real, not just quiet: the frozen store's
+			// .local_version must stay exactly as seeded, not get silently
+			// rewritten to the running binary's version by trackBdVersion.
+			got, err := os.ReadFile(localVersionPath)
+			if err != nil {
+				t.Fatalf("reading %s after run: %v", localVersionFile, err)
+			}
+			if strings.TrimSpace(string(got)) != "0.0.1" {
+				t.Errorf("%s = %q after a frozen run, want unchanged \"0.0.1\" (trackBdVersion must not "+
+					"write during a freeze)", localVersionFile, strings.TrimSpace(string(got)))
+			}
+		})
 	}
 }
 

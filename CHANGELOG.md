@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration. The check runs twice: once early in the root command, before
   version-bump auto-migration or JSONL auto-import can touch the store, and
   again at each write command's own chokepoint. Read commands (`list`,
-  `show`, `ready`, …) and `--dry-run`/`--inspect` previews are unaffected —
-  diagnosis must still work during a freeze. Clear the freeze with
-  `gt migrate thaw`.
+  `show`, `ready`, …) keep working during a freeze — the same early check
+  also skips version tracking and auto-migration for them, so a frozen store
+  is never rewritten just because someone ran a read. `--dry-run`/`--inspect`
+  previews are blocked at the per-command chokepoint instead, same as strict
+  `--readonly` already blocks them. Clear the freeze with `gt migrate thaw`.
 
 - **`bd reclaim` summarizes the leases its replica guard declined instead of
   naming every one, every run** (wy-sp2l4). A lease granted by another replica
