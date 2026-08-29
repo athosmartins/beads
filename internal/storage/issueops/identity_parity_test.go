@@ -57,6 +57,9 @@ func TestIdentityCanonicalizationParityWithValidation(t *testing.T) {
 		{name: "genuinely different identities do not match", assignee: "gastown.mayor", actor: "gastown.dog-3"},
 		{name: "both empty match", assignee: "", actor: ""},
 		{name: "empty assignee never matches a non-empty actor", assignee: "", actor: "mayor"},
+		{name: "session suffix of the assignee matches (wa-msxg5)", assignee: "batista-wa", actor: "batista-wa-awisplqy3swl"},
+		{name: "a different agent's session does not match (wa-msxg5 regression guard)", assignee: "batista-wa", actor: "thies-wa-gapfne3"},
+		{name: "a name that only looks like a prefix does not match (wa-msxg5 collision guard)", assignee: "X", actor: "X2-something"},
 	}
 	for _, tc := range matchCases {
 		t.Run("ActorMatches/"+tc.name, func(t *testing.T) {

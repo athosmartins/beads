@@ -110,14 +110,73 @@ func CanonicalActor(s string) string {
 	return b.String()
 }
 
+// canonicalSessionSuffix reports whether long is a session incarnation of
+// short: long, once canonicalized, consists of short's canonical form
+// followed by the canonical separator and (optionally) more. Gas Town
+// assigns an issue to an agent's bare name ("batista-wa") but performs the
+// write under that agent's per-session actor string
+// ("batista-wa-awisplqy3swl") — the session is an incarnation of the agent,
+// not a different identity (wa-msxg5), but no amount of delimiter-folding
+// alone (CanonicalActor) makes a shorter assignee string equal a longer,
+// session-qualified actor string naming the same agent. Both arguments must
+// already be canonicalized; short == "" always returns false, or an
+// unassigned issue (CanonicalActor("") == "") would match every actor whose
+// canonical form happens to start with a separator.
+//
+// SCOPE LIMIT, read before extending this: this is a structural check, not
+// an identity check. It cannot confirm the suffix names a session bd has
+// actually seen — bd has no session registry, only the two strings a caller
+// hands it (confirmed by reading every ActorMatches/actorMatches call site
+// in internal/storage: assignee and actor arrive as bare strings, nothing
+// more). The fix originally proposed for wa-msxg5 was to resolve actor to
+// its owning agent via a registry (the same agent_name -> template
+// relationship `gc session list` exposes) and compare agent-to-agent,
+// specifically to close the hole this scope limit leaves open: a genuinely
+// distinct agent whose own name happens to be "<other-agent>-<word>" (e.g. a
+// future "batista-wa-backup") would have ITS sessions match against
+// "batista-wa" too, incorrectly. That registry lookup is not reachable from
+// here — it lives in Gas Town's gc/gascity layer, a dependency this package
+// cannot take without inverting bd's layering (and bd is used outside Gas
+// Town, where no such registry would exist at all).
+//
+// Accepted as the pragmatic fix instead because: (a) it strictly narrows the
+// originally-proposed bare-prefix design, which matched on any shared
+// prefix — this requires an exact canonical-separator boundary, so
+// "batista-wa2" no longer matches "batista-wa"; (b) no agent name in the
+// current Gas Town roster is a separator-extension of another agent's name
+// (verified 2026-08-23, at the time this landed); (c) the bug this fixes
+// (P1, reproduced independently by three agents, blocks every agent from
+// closing its own beads without --force) is real and active today, while
+// the collision this leaves open is hypothetical and, per (b), not
+// currently live. Whoever names a new Gas Town agent should avoid
+// "<existing-agent>-<word>" shapes; whoever later plumbs session-registry
+// data down to bd should replace this with the registry check rather than
+// extend it further.
+func canonicalSessionSuffix(short, long string) bool {
+	if short == "" {
+		return false
+	}
+	return strings.HasPrefix(long, short+"_")
+}
+
 // ActorMatches reports whether actor has the same authority as assignee:
-// either they're byte-identical, or they canonicalize to the same identity
-// (see CanonicalActor). The byte-identical check is not redundant — it
-// avoids paying canonicalization on the overwhelmingly common exact-match
-// path (ga-5ksp5 gate review, #5438: fixes a garbled doc comment, no
-// behavior change).
+// they're byte-identical, they canonicalize to the same identity (see
+// CanonicalActor), or one canonicalizes to a session incarnation of the
+// other (see canonicalSessionSuffix, wa-msxg5) — an agent's bare name and
+// that agent's own session-qualified actor string are the same identity at
+// two granularities, and either may legitimately appear in either argument
+// position (some callers compare two assignee-shaped values against each
+// other, not just assignee-then-actor, so the session-suffix check runs
+// both directions). The byte-identical check is not redundant — it avoids
+// paying canonicalization on the overwhelmingly common exact-match path
+// (ga-5ksp5 gate review, #5438: fixes a garbled doc comment, no behavior
+// change).
 func ActorMatches(assignee, actor string) bool {
-	return assignee == actor || CanonicalActor(assignee) == CanonicalActor(actor)
+	if assignee == actor {
+		return true
+	}
+	ca, cb := CanonicalActor(assignee), CanonicalActor(actor)
+	return ca == cb || canonicalSessionSuffix(ca, cb) || canonicalSessionSuffix(cb, ca)
 }
 
 // AssigneeMatches validates that the actor has authority to close the issue.

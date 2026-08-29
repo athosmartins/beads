@@ -48,12 +48,37 @@ func canonicalActor(s string) string {
 	return b.String()
 }
 
-// actorMatches reports whether a and b denote the same identity: either
-// they're byte-identical, or they canonicalize to the same string (see
-// canonicalActor). The byte-identical check is not redundant — it avoids
-// paying canonicalization on the overwhelmingly common exact-match path.
+// canonicalSessionSuffix reports whether long is a session incarnation of
+// short: long, once canonicalized, consists of short's canonical form
+// followed by the canonical separator and (optionally) more — an agent's
+// bare name ("batista-wa") and that agent's own session-qualified actor
+// string ("batista-wa-awisplqy3swl") are the same identity at two
+// granularities (wa-msxg5). Both arguments must already be canonicalized;
+// short == "" always returns false. This is a package-local duplicate of
+// internal/validation/issue.go's canonicalSessionSuffix — see that copy for
+// the full rationale, including the documented scope limit (structural
+// check, not a registry lookup) and why the two copies stay independent
+// (same layering constraint as canonicalActor above). Keep them in sync.
+func canonicalSessionSuffix(short, long string) bool {
+	if short == "" {
+		return false
+	}
+	return strings.HasPrefix(long, short+"_")
+}
+
+// actorMatches reports whether a and b denote the same identity: they're
+// byte-identical, they canonicalize to the same string (see canonicalActor),
+// or one canonicalizes to a session incarnation of the other (see
+// canonicalSessionSuffix, wa-msxg5), checked both directions since callers
+// don't always pass assignee-then-actor. The byte-identical check is not
+// redundant — it avoids paying canonicalization on the overwhelmingly common
+// exact-match path.
 func actorMatches(a, b string) bool {
-	return a == b || canonicalActor(a) == canonicalActor(b)
+	if a == b {
+		return true
+	}
+	ca, cb := canonicalActor(a), canonicalActor(b)
+	return ca == cb || canonicalSessionSuffix(ca, cb) || canonicalSessionSuffix(cb, ca)
 }
 
 // ActorMatches is the exported form of actorMatches. Exported for the

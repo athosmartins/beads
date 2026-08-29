@@ -182,6 +182,22 @@ func TestActorMatches(t *testing.T) {
 		{name: "genuinely different identities do not match", assignee: "gastown.mayor", actor: "gastown.dog-3", want: false},
 		{name: "both empty match", assignee: "", actor: "", want: true},
 		{name: "empty assignee never matches a non-empty actor", assignee: "", actor: "mayor", want: false},
+		// wa-msxg5: an agent's bare name and that agent's own session-qualified
+		// actor string are the same identity at two granularities.
+		{name: "session suffix of the assignee matches (wa-msxg5)", assignee: "batista-wa", actor: "batista-wa-awisplqy3swl", want: true},
+		{name: "session suffix match is symmetric in argument order (wa-msxg5)", assignee: "batista-wa-awisplqy3swl", actor: "batista-wa", want: true},
+		{name: "session suffix composes with delimiter canonicalization (wa-msxg5)", assignee: "gastown.mayor", actor: "gastown_mayor__somesession", want: true},
+		{name: "exact repro from the bug report matches (wa-msxg5)", assignee: "peter-wa", actor: "peter-wa-gack5xf", want: true},
+		// Regression guards — the whole point of the fix is to stop matching
+		// on a bare shared prefix, only on a real canonical-separator boundary.
+		{name: "a different agent's session does not match (wa-msxg5 regression guard)", assignee: "batista-wa", actor: "thies-wa-gapfne3", want: false},
+		{name: "a name that only looks like a prefix does not match (wa-msxg5 collision guard)", assignee: "X", actor: "X2-something", want: false},
+		{name: "empty assignee never matches a session-suffixed actor either (wa-msxg5)", assignee: "", actor: "-session", want: false},
+		// Documented scope limit (see canonicalSessionSuffix): this is a
+		// structural check, not a registry lookup, so any well-formed suffix
+		// passes — bd has no way to confirm the suffix names a session it has
+		// actually seen.
+		{name: "any well-formed suffix matches — no session registry to verify against (wa-msxg5, documented scope limit)", assignee: "batista-wa", actor: "batista-wa-anything-at-all", want: true},
 	}
 
 	for _, tt := range tests {
