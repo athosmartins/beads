@@ -1131,6 +1131,18 @@ prepare_workspace() {
 }
 
 for version in "${SELECTED_VERSIONS[@]}"; do
+    # v0.63.3's published darwin/arm64 release binary was built without CGO
+    # and can't open an embedded-Dolt store at all ("embedded Dolt requires
+    # CGO") — a limitation of that specific historical release artifact, not
+    # of this host or this corpus's code, and not something a local fix can
+    # change (the whole point is testing the authentic pinned binary).
+    # Skipping just this one version keeps ./run.sh from being permanently
+    # red on macOS; linux/amd64 and every other embedded-Dolt version
+    # (v1.0.0, v1.0.1, v1.1.0, v1.1.2) are unaffected and still run.
+    if [ "$version" = v0.63.3 ] && [ "$OS" = darwin ] && [ "$ARCH" = arm64 ]; then
+        printf '\n● Historical embedded Dolt upgrade: %s\n  ⚠ skipped on darwin/arm64: the published release binary for %s requires CGO to open an embedded-Dolt store, and its darwin/arm64 build has none — upstream release limitation, covered on linux/amd64\n' "$version" "$version"
+        continue
+    fi
     prepare_workspace
     case "$version" in
         "$SOURCE_TAG_SQLITE_VERSION") run_v091_upgrade ;;

@@ -20,6 +20,14 @@ resolve_existing_path() {
     # unconditionally by default — verified empirically to error + exit
     # nonzero on a missing path, same as GNU's -e. Linux keeps the exact
     # existing invocation; only Darwin takes the flagless path.
+    #
+    # That "Darwin" branch is really "not Linux", not "BSD realpath" — with
+    # Homebrew coreutils on PATH, `realpath` resolves to GNU realpath there
+    # too, and GNU's default (no -e) accepts a missing *final* component
+    # (rc 0), silently dropping the existence guarantee this function
+    # promises callers. Don't trust either realpath's default behavior for
+    # that guarantee; check it ourselves so it holds on both branches.
+    [ -e "$1" ] || return 1
     if [ "$OS" = linux ]; then
         realpath -e -- "$1"
     else
