@@ -64,14 +64,36 @@ Examples:
 				fmt.Fprintf(os.Stderr, "Error getting %s: %v\n", fullID, err)
 				continue
 			}
-			if issue.Status != types.StatusDeferred {
+
+			// Gate on defer_until, not status alone (ga-bq3w5). The ready-work
+			// query hides ANY issue with a future defer_until regardless of
+			// status ("(defer_until IS NULL OR defer_until <= UTC_TIMESTAMP())"),
+			// so a status=open issue can still carry a live defer_until — e.g.
+			// `bd update <id> --status open --defer <date>` sets both explicitly
+			// in one call, and an explicit --status wins over --defer's own
+			// status=deferred default. Gating solely on status left such an
+			// issue permanently invisible to `bd ready` with nothing connecting
+			// the two — `bd show` does print the stray defer_until, but nothing
+			// in the CLI says it's the reason the issue never appears in ready —
+			// and no command able to undo it: this one refused with a
+			// technically-true, practically-misleading "is not deferred
+			// (status: open)" and never touched the timestamp actually doing
+			// the hiding. Mirrors the same
+			// gate GH#3233 already gave `bd update --defer=""` (see update.go):
+			// only flip status to open when it was actually "deferred" — other
+			// statuses (blocked, in_progress, closed, …) shouldn't be clobbered
+			// just because a stray defer_until needs clearing.
+			wasDeferred := issue.Status == types.StatusDeferred
+			if !wasDeferred && issue.DeferUntil == nil {
 				fmt.Fprintf(os.Stderr, "%s is not deferred (status: %s)\n", fullID, string(issue.Status))
 				continue
 			}
 
 			updates := map[string]interface{}{
-				"status":      string(types.StatusOpen),
 				"defer_until": nil,
+			}
+			if wasDeferred {
+				updates["status"] = string(types.StatusOpen)
 			}
 
 			if err := store.UpdateIssue(ctx, fullID, updates, actor); err != nil {
@@ -84,8 +106,10 @@ Examples:
 				if issue != nil {
 					undeferredIssues = append(undeferredIssues, issue)
 				}
-			} else {
+			} else if wasDeferred {
 				fmt.Printf("%s Undeferred %s (now open)\n", ui.RenderPass("*"), fullID)
+			} else {
+				fmt.Printf("%s Cleared stale defer_until on %s (status unchanged: %s)\n", ui.RenderPass("*"), fullID, string(issue.Status))
 			}
 		}
 
