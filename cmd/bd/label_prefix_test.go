@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,31 @@ func TestLabelsWithPrefix(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("labelsWithPrefix(%v, %q) = %v, want %v", tt.labels, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLabelOperationGerund guards against the past-tense-on-failure bug a PR
+// reviewer flagged on this exact code path: "label removed: ...: <err>" reads
+// as a success report when it is actually the error message for a removal
+// that failed. The failure-path callers must use the gerund form instead.
+func TestLabelOperationGerund(t *testing.T) {
+	tests := []struct {
+		operation string
+		want      string
+	}{
+		{labelOperationAdded, "adding"},
+		{labelOperationRemoved, "removing"},
+		{"custom", "custom"}, // unknown input passes through rather than panicking
+	}
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			if got := labelOperationGerund(tt.operation); got != tt.want {
+				t.Errorf("labelOperationGerund(%q) = %q, want %q", tt.operation, got, tt.want)
+			}
+			if got := labelOperationGerund(tt.operation); strings.HasSuffix(got, "ed") {
+				t.Errorf("labelOperationGerund(%q) = %q, still reads as past tense", tt.operation, got)
 			}
 		})
 	}
