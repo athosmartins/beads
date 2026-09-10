@@ -1525,11 +1525,13 @@ func TestCLI_CommentsSwappedAddRejectedInProxiedServerMode(t *testing.T) {
 	}
 }
 
-// TestCLI_CommentsAddShortID tests that 'comments add' accepts short IDs (issue #1070)
-// Most bd commands accept short IDs (e.g., "5wbm") but comments add previously required
-// full IDs (e.g., "mike.vibe-coding-5wbm"). This test ensures short IDs work.
-//
-// Note: Short IDs work because the code calls utils.ResolvePartialID().
+// TestCLI_CommentsAddShortID tests that 'comments add' accepts a bare full
+// hash without its issue prefix (e.g. "5wbm" for "mike.vibe-coding-5wbm",
+// issue #1070) — full IDs used to be required. It does NOT test genuine
+// abbreviation (a hash shorter than the real one): since PR #5393, comment
+// writes require an exact id (see resolveAndGetIssueForMutationExact /
+// utils.ResolvePartialIDExact) and PartialIDWithCommentsAdd below asserts
+// that a real abbreviation is refused, not accepted.
 func TestCLI_CommentsAddShortID(t *testing.T) {
 
 	t.Run("ShortIDWithCommentsAdd", func(t *testing.T) {
@@ -1582,6 +1584,14 @@ func TestCLI_CommentsAddShortID(t *testing.T) {
 		}
 	})
 
+	// PartialIDWithCommentsAdd used to assert that a genuinely abbreviated id
+	// (shorter than the full hash) succeeded on "comments add" — true when
+	// this test was written (issue #1070), but no longer the contract: PR
+	// #5393 review item M1 established that "comments add" must refuse an
+	// abbreviation exactly like "comment" (singular) does (see
+	// TestCLI_CommentAbbreviatedIDRejectedWithTruthfulMessage), since the two
+	// are documented as guarded twins (CHANGELOG.md, hash-ids.md). This
+	// subtest now asserts the refusal instead of the old silent-accept.
 	t.Run("PartialIDWithCommentsAdd", func(t *testing.T) {
 		tmpDir := setupCLITestDB(t)
 
@@ -1601,16 +1611,40 @@ func TestCLI_CommentsAddShortID(t *testing.T) {
 		if len(shortID) > 4 {
 			shortID = shortID[:4] // Use only first 4 chars for partial match
 		}
+		if shortID == parts[len(parts)-1] {
+			t.Fatalf("test setup: hash %q too short to truncate into a genuine abbreviation", parts[len(parts)-1])
+		}
 		t.Logf("Full ID: %s, Partial ID: %s", fullID, shortID)
 
-		// Add comment using partial ID
-		stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "comments", "add", shortID, "Comment via partial ID")
+		// Sanity check: the same abbreviation still works on a READ path
+		// (show), proving this is a real, resolvable abbreviation and not an
+		// accident of the fixture — the refusal below is specific to writes.
+		showOut, showErr, err := runBDInProcessAllowError(t, tmpDir, "show", shortID, "--json")
 		if err != nil {
-			t.Fatalf("comments add with partial ID failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+			t.Fatalf("fixture sanity check failed: 'bd show %s' unexpectedly failed: %v\nstdout: %s\nstderr: %s", shortID, err, showOut, showErr)
+		}
+		if !strings.Contains(showOut, fullID) {
+			t.Fatalf("fixture sanity check failed: 'bd show %s' did not resolve to %s, got: %s", shortID, fullID, showOut)
 		}
 
-		if !strings.Contains(stdout, "Comment added") {
-			t.Errorf("Expected 'Comment added' in output, got: %s", stdout)
+		// Add comment using partial ID — must now be refused, truthfully.
+		stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "comments", "add", shortID, "Comment via partial ID")
+		if err == nil {
+			t.Fatalf("expected non-zero exit for 'bd comments add %s ...' (abbreviation on a write path), got stdout=%q stderr=%q", shortID, stdout, stderr)
+		}
+		combined := stdout + stderr
+		if !strings.Contains(combined, "abbreviations are not accepted") {
+			t.Errorf("expected the truthful abbreviation-refusal message, got stdout=%q stderr=%q", stdout, stderr)
+		}
+		if strings.Contains(combined, "not found") {
+			t.Errorf("message must not claim the issue was not found — %s exists, only the abbreviation was refused; got stdout=%q stderr=%q", fullID, stdout, stderr)
+		}
+
+		// Regression check: no comment silently landed on the real issue.
+		commentsOut := runBDInProcess(t, tmpDir, "comments", fullID, "--json")
+		trimmed := strings.TrimSpace(commentsOut)
+		if trimmed != "[]" && trimmed != "null" {
+			t.Fatalf("expected no comments on %s after rejected abbreviated 'comments add', got: %s", fullID, commentsOut)
 		}
 	})
 

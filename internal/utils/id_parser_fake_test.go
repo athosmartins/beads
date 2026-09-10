@@ -98,9 +98,16 @@ func TestResolvePartialIDExact_FakeStore_ReproducesReportedIncident(t *testing.T
 	}
 
 	// The fix: the write-path resolver must refuse the same input instead of
-	// silently landing on the unrelated wisp.
+	// silently landing on the unrelated wisp. Asserting errors.Is (not just
+	// err != nil) pins the WISP branch's abbrevOnly tracking specifically:
+	// without it, "list" still fails (via the generic "no issue found"
+	// fallback), so a regression that silently drops the wisp-branch
+	// abbrevOnly candidate — reintroducing this exact incident's false
+	// not-found — would pass this test undetected.
 	if got, err := utils.ResolvePartialIDExact(ctx, store, "list"); err == nil {
 		t.Fatalf(`ResolvePartialIDExact("list") = (%q, nil); want a "not found" error, not a silent match onto hq-wisp-list3t0`, got)
+	} else if !errors.Is(err, utils.ErrAbbreviatedIDNotAllowed) {
+		t.Fatalf(`ResolvePartialIDExact("list") error = %v; want errors.Is(err, ErrAbbreviatedIDNotAllowed) — "list" IS a valid leading-prefix abbreviation of hq-wisp-list3t0, so the error must say so truthfully, not fall back to a generic "no issue found"`, err)
 	}
 
 	// Happy path: an id that genuinely, exactly names an issue must still
