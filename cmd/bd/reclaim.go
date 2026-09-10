@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -83,9 +84,9 @@ Examples:
 			}
 		}()
 
-		olderThan, _ := cmd.Flags().GetDuration("older-than")
-		if olderThan < 0 {
-			return HandleErrorRespectJSON("--older-than must not be negative")
+		olderThan, err := resolveReclaimOlderThan(cmd)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		filter, err := reclaimFilterFromFlags(cmd)
@@ -161,6 +162,31 @@ func registerReclaimScopeFlags(fs *pflag.FlagSet) {
 	fs.StringSlice("exclude-label", nil, "Never reclaim issues carrying ANY of these labels")
 	fs.Bool("any-replica", false,
 		"Also reclaim leases granted by ANOTHER replica (unsafe unless that replica is gone; see 'Replicas and leases')")
+}
+
+// resolveReclaimOlderThan returns the reclaim grace window: the explicit
+// --older-than value if the operator passed one, otherwise 2x the
+// deployment's EFFECTIVE lease TTL, resolved at run time.
+//
+// The flag's registered default (2*issueops.DefaultLeaseTTL) is frozen at
+// command-registration time from the compiled constant, so it cannot see a
+// deployment's "lease.ttl" config key / BD_LEASE_TTL env var override
+// (issueops.EffectiveDefaultLeaseTTL). Without this, a deployment that widens
+// its claim TTL via that override would silently keep a default grace window
+// sized for the old, narrower TTL — the "2x the lease TTL" this command's own
+// help text promises would quietly stop being true.
+func resolveReclaimOlderThan(cmd *cobra.Command) (time.Duration, error) {
+	olderThan, err := cmd.Flags().GetDuration("older-than")
+	if err != nil {
+		return 0, fmt.Errorf("--older-than: %w", err)
+	}
+	if !cmd.Flags().Changed("older-than") {
+		olderThan = 2 * issueops.EffectiveDefaultLeaseTTL()
+	}
+	if olderThan < 0 {
+		return 0, fmt.Errorf("--older-than must not be negative")
+	}
+	return olderThan, nil
 }
 
 // reclaimFilterFromFlags maps the scope flags onto a types.ReclaimFilter,
