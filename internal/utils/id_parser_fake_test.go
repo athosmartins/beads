@@ -9,6 +9,7 @@ package utils_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -112,5 +113,57 @@ func TestResolvePartialIDExact_FakeStore_ReproducesReportedIncident(t *testing.T
 	}
 	if got, err := utils.ResolvePartialIDExact(ctx, store, "hq-wisp-list3t0"); err != nil || got != "hq-wisp-list3t0" {
 		t.Errorf("ResolvePartialIDExact(%q) = (%q, %v); want (%q, nil) — full wisp id must still resolve exactly", "hq-wisp-list3t0", got, err, "hq-wisp-list3t0")
+	}
+}
+
+// TestResolvePartialIDExact_AbbreviationRefusalIsDistinguishableFromNotFound
+// is a Docker-free regression test for the follow-up steveyegge's PR #5393
+// review flagged (item c): an abbreviation that DOES match a real issue must
+// error differently from an input that matches nothing at all, because "no
+// issue found matching %q" is false in the first case — the issue exists,
+// only the abbreviation was refused. Exact-only callers (bd comment) use
+// errors.Is(err, ErrAbbreviatedIDNotAllowed) to tell the two apart and give a
+// truthful, actionable message instead of claiming the issue is missing.
+func TestResolvePartialIDExact_AbbreviationRefusalIsDistinguishableFromNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeResolverStore{
+		issues: []fakeIssue{
+			{id: "hq-a3f8e9", ephemeral: false},
+		},
+		config: map[string]string{"issue_prefix": "hq"},
+	}
+
+	// A real, valid leading-prefix abbreviation of an existing issue: must
+	// wrap ErrAbbreviatedIDNotAllowed, not a plain "not found".
+	got, err := utils.ResolvePartialIDExact(ctx, store, "a3f8")
+	if err == nil {
+		t.Fatalf(`ResolvePartialIDExact("a3f8") = (%q, nil); want an ErrAbbreviatedIDNotAllowed error — "a3f8" is a real abbreviation of hq-a3f8e9`, got)
+	}
+	if !errors.Is(err, utils.ErrAbbreviatedIDNotAllowed) {
+		t.Errorf(`ResolvePartialIDExact("a3f8") error = %q; want it to wrap ErrAbbreviatedIDNotAllowed (errors.Is)`, err)
+	}
+	if strings.Contains(err.Error(), "no issue found matching") {
+		t.Errorf(`ResolvePartialIDExact("a3f8") error = %q; must NOT claim "no issue found" — hq-a3f8e9 exists`, err)
+	}
+
+	// An input that matches nothing at all, not even via abbreviation: must
+	// stay a plain not-found, and must NOT wrap ErrAbbreviatedIDNotAllowed —
+	// proves the two failure modes are genuinely distinguishable, not just
+	// differently worded copies of the same check.
+	got, err = utils.ResolvePartialIDExact(ctx, store, "zzzzzz")
+	if err == nil {
+		t.Fatalf(`ResolvePartialIDExact("zzzzzz") = (%q, nil); want a not-found error`, got)
+	}
+	if errors.Is(err, utils.ErrAbbreviatedIDNotAllowed) {
+		t.Errorf(`ResolvePartialIDExact("zzzzzz") error = %q; want a plain not-found, not ErrAbbreviatedIDNotAllowed — nothing matches "zzzzzz" even via abbreviation`, err)
+	}
+	if !strings.Contains(err.Error(), "no issue found matching") {
+		t.Errorf(`ResolvePartialIDExact("zzzzzz") error = %q; want the genuine "no issue found matching" wording`, err)
+	}
+
+	// Sanity: the exact id still resolves under the same store/config,
+	// confirming the fixture didn't accidentally break the happy path.
+	if got, err := utils.ResolvePartialIDExact(ctx, store, "hq-a3f8e9"); err != nil || got != "hq-a3f8e9" {
+		t.Errorf("ResolvePartialIDExact(%q) = (%q, %v); want (%q, nil)", "hq-a3f8e9", got, err, "hq-a3f8e9")
 	}
 }

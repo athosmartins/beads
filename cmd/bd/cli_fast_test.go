@@ -1810,6 +1810,125 @@ func TestCLI_CommentTextStartingWithReservedWordStillWorks(t *testing.T) {
 	}
 }
 
+// TestCLI_CommentRmDeleteReservedWordsRejected covers the two reserved words
+// TestCLI_CommentListMisplacedSyntax/TestCLI_CommentAddMisplacedSyntax do not:
+// "rm" and "delete" carry no hand-written case in validateCommentArgs (unlike
+// "list"/"add"), so they fall through to checkCommentIDNotReservedWord's
+// generic message and, before this test, had no CLI-level (cobra-dispatch)
+// coverage at all — steveyegge's PR #5393 review (item a) flagged that
+// generic message as potentially misleading for these two specifically, since
+// neither is an actual "bd comments" subcommand the way "list"/"add" are.
+// This pins both halves: the command is rejected, AND — the part that
+// actually matters — no comment silently lands on an unrelated real issue.
+func TestCLI_CommentRmDeleteReservedWordsRejected(t *testing.T) {
+	t.Parallel()
+
+	for _, word := range []string{"rm", "delete"} {
+		t.Run(word, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := setupCLITestDB(t)
+
+			out := runBDInProcess(t, tmpDir, "create", "Bystander issue for "+word+"-typo", "-p", "1", "--json")
+			jsonStart := strings.Index(out, "{")
+			if jsonStart < 0 {
+				t.Fatalf("No JSON found in create output: %s", out)
+			}
+			var issue map[string]interface{}
+			if err := json.Unmarshal([]byte(out[jsonStart:]), &issue); err != nil {
+				t.Fatalf("Failed to parse create JSON: %v\nOutput: %s", err, out)
+			}
+			fullID := issue["id"].(string)
+
+			stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "comment", word, "accidental stray text")
+			if err == nil {
+				t.Fatalf("expected non-zero exit for 'bd comment %s ...', got stdout=%q stderr=%q", word, stdout, stderr)
+			}
+			combined := stdout + stderr
+			// Must be refused as an id/reserved word — but, unlike "list"/"add",
+			// must NOT claim it is a misplaced "bd comments" subcommand: there is
+			// no "bd comments rm" or "bd comments delete".
+			if !strings.Contains(combined, "not a valid issue id") {
+				t.Errorf("expected a not-a-valid-issue-id refusal, got stdout=%q stderr=%q", stdout, stderr)
+			}
+			if strings.Contains(combined, "misplaced") {
+				t.Errorf("message falsely implies %q is a misplaced \"bd comments\" subcommand (it isn't one), got stdout=%q stderr=%q", word, stdout, stderr)
+			}
+
+			// The regression check: the bystander issue must have received NO
+			// comment.
+			commentsOut := runBDInProcess(t, tmpDir, "comments", fullID, "--json")
+			trimmed := strings.TrimSpace(commentsOut)
+			if trimmed != "[]" && trimmed != "null" {
+				t.Fatalf("expected no comments on bystander issue %s after rejected 'comment %s', got: %s", fullID, word, commentsOut)
+			}
+		})
+	}
+}
+
+// TestCLI_CommentAbbreviatedIDRejectedWithTruthfulMessage is the CLI-level
+// regression test for steveyegge's PR #5393 review item (c): a leading-prefix
+// abbreviation of a REAL issue's id is refused on comment writes (exact-only
+// policy, unchanged), but the refusal message must not claim the issue does
+// not exist — it does, the abbreviation was just refused. Before this fix,
+// resolveAndGetIssueForMutationExact surfaced ResolvePartialIDExact's plain
+// "no issue found matching %q", which is false in exactly this case; every
+// other command family (show/close/update) still accepts the same
+// abbreviation, so a truthful, distinguishing message matters here more than
+// most refusals.
+func TestCLI_CommentAbbreviatedIDRejectedWithTruthfulMessage(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := setupCLITestDB(t)
+
+	out := runBDInProcess(t, tmpDir, "create", "Needs an exact id on comment", "-p", "1", "--json")
+	jsonStart := strings.Index(out, "{")
+	if jsonStart < 0 {
+		t.Fatalf("No JSON found in create output: %s", out)
+	}
+	var issue map[string]interface{}
+	if err := json.Unmarshal([]byte(out[jsonStart:]), &issue); err != nil {
+		t.Fatalf("Failed to parse create JSON: %v\nOutput: %s", err, out)
+	}
+	fullID := issue["id"].(string)
+	if len(fullID) < 4 {
+		t.Fatalf("test setup: generated id %q too short to abbreviate", fullID)
+	}
+	abbrev := fullID[:len(fullID)-1]
+
+	// Sanity check: the same abbreviation still works on a READ path (show),
+	// proving this is a real, resolvable abbreviation and not an accident of
+	// the fixture — the gap this test guards is specific to comment WRITES.
+	showOut, showErr, err := runBDInProcessAllowError(t, tmpDir, "show", abbrev, "--json")
+	if err != nil {
+		t.Fatalf("fixture sanity check failed: 'bd show %s' unexpectedly failed: %v\nstdout: %s\nstderr: %s", abbrev, err, showOut, showErr)
+	}
+	if !strings.Contains(showOut, fullID) {
+		t.Fatalf("fixture sanity check failed: 'bd show %s' did not resolve to %s, got: %s", abbrev, fullID, showOut)
+	}
+
+	stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "comment", abbrev, "should not be written")
+	if err == nil {
+		t.Fatalf("expected non-zero exit for 'bd comment %s ...' (abbreviation on a write path), got stdout=%q stderr=%q", abbrev, stdout, stderr)
+	}
+	combined := stdout + stderr
+	if !strings.Contains(combined, "abbreviations are not accepted") {
+		t.Errorf("expected the truthful abbreviation-refusal message, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(combined, "bd show") {
+		t.Errorf("expected the message to point at the full id via `bd show`, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Contains(combined, "not found") {
+		t.Errorf("message must not claim the issue was not found — %s exists, only the abbreviation was refused; got stdout=%q stderr=%q", fullID, stdout, stderr)
+	}
+
+	// The regression check: no comment silently landed on the real issue.
+	commentsOut := runBDInProcess(t, tmpDir, "comments", fullID, "--json")
+	trimmed := strings.TrimSpace(commentsOut)
+	if trimmed != "[]" && trimmed != "null" {
+		t.Fatalf("expected no comments on %s after rejected abbreviated 'comment', got: %s", fullID, commentsOut)
+	}
+}
+
 // TestCLI_CreateRejectsFlagLikeTitles verifies that positional arguments starting
 // with - or -- are rejected as likely misinterpreted flags (bd-2c0).
 func TestCLI_CreateRejectsFlagLikeTitles(t *testing.T) {
