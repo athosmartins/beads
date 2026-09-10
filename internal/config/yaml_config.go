@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -929,6 +930,18 @@ func validateYamlConfigValue(key, value string) error {
 		}
 		if n < 0 {
 			return fmt.Errorf("prime.max-memory-chars must be a non-negative integer (0 = unlimited), got %q", value)
+		}
+	case "lease.ttl":
+		// Validated at write time so a typo (e.g. "4hrs" instead of "4h")
+		// is rejected here instead of silently parsing to zero later and
+		// falling back to the compiled default with no indication anything
+		// was wrong (PR #5470 review R1, gastownhall/gascity ga-7uoua).
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("lease.ttl must be a valid duration (e.g. \"5m\", \"4h\"), got %q: %w", value, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("lease.ttl must be positive, got %q", value)
 		}
 	}
 	return nil

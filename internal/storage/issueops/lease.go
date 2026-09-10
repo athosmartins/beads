@@ -56,11 +56,29 @@ func WithLeaseTTL(ctx context.Context, ttl time.Duration) context.Context {
 // Gas City's measured 240min claim-to-merge window, ga-z93p0) without
 // changing the compiled default for every other deployment of this binary.
 // A per-claim WithLeaseTTL still wins over this when both are set.
+//
+// A value that IS set but unusable (fails to parse as a duration, or isn't
+// positive) warns to stderr and falls back to DefaultLeaseTTL rather than
+// doing so silently: reading via config.GetDuration would collapse "unset"
+// and "malformed" into the same zero value, so a typo'd BD_LEASE_TTL (e.g.
+// "4hrs" instead of "4h") would otherwise silently keep the deployment on
+// the narrow 5-minute default with no indication anything was wrong
+// (PR #5470 review R1, gastownhall/gascity ga-7uoua).
 func EffectiveDefaultLeaseTTL() time.Duration {
-	if d := config.GetDuration("lease.ttl"); d > 0 {
-		return d
+	raw := config.GetString("lease.ttl")
+	if raw == "" {
+		return DefaultLeaseTTL
 	}
-	return DefaultLeaseTTL
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: lease.ttl/BD_LEASE_TTL=%q is not a valid duration, using compiled default %v: %v\n", raw, DefaultLeaseTTL, err)
+		return DefaultLeaseTTL
+	}
+	if d <= 0 {
+		fmt.Fprintf(os.Stderr, "warning: lease.ttl/BD_LEASE_TTL=%q must be positive, using compiled default %v\n", raw, DefaultLeaseTTL)
+		return DefaultLeaseTTL
+	}
+	return d
 }
 
 // leaseTTL resolves the lease TTL for the current claim/heartbeat.
