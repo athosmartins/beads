@@ -35,6 +35,12 @@ func TestIsYamlOnlyKey(t *testing.T) {
 		{"hierarchy.max-depth", true},
 		{"hierarchy.custom_setting", true}, // prefix match
 
+		// Lease settings (PR #5470 review R2, gastownhall/gascity ga-7uoua):
+		// EffectiveDefaultLeaseTTL reads lease.ttl through viper directly, so
+		// a DB-backed `bd config set` would be silently unread.
+		{"lease.ttl", true},
+		{"lease.other", false}, // exact match only, "lease." is not a registered prefix
+
 		// Backup settings (GH#2358)
 		{"backup.enabled", true},
 		{"backup.interval", true},

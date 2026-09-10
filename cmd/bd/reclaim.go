@@ -30,7 +30,10 @@ claim them. The previous owner's stale lease is recorded as a recovery event.
 --older-than is a grace window past lease expiry: only leases that expired at
 least this long ago are reclaimed, so a worker briefly paused (GC, clock skew)
 is not robbed of live work. Run it from a supervisor on a timer with a window
-of roughly 2× the claim TTL.
+of roughly 2× the claim TTL. When --older-than is omitted, that 2× multiplier
+is applied to the deployment's EFFECTIVE claim TTL — 'lease.ttl' in
+config.yaml, or the BD_LEASE_TTL env var, falling back to a 5m compiled
+default (see 'bd config set lease.ttl' for widening it deployment-wide).
 
 By default reclaim covers every stale lease THIS replica granted. The scope
 filters below narrow it further, using the same label surface claiming is
@@ -247,7 +250,10 @@ func reclaimFilterFromFlags(cmd *cobra.Command) (types.ReclaimFilter, error) {
 
 func init() {
 	reclaimCmd.Flags().Duration("older-than", 2*issueops.DefaultLeaseTTL,
-		"Only reclaim leases that expired at least this long ago (grace window)")
+		"Only reclaim leases that expired at least this long ago (grace window). "+
+			"Default shown is 2x the compiled lease TTL baseline; when omitted, the "+
+			"actual default is 2x this deployment's EFFECTIVE lease.ttl (config.yaml "+
+			"or BD_LEASE_TTL), which may be wider")
 	registerReclaimScopeFlags(reclaimCmd.Flags())
 	rootCmd.AddCommand(reclaimCmd)
 }

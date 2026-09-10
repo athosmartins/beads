@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
@@ -69,7 +70,12 @@ func EffectiveDefaultLeaseTTL() time.Duration {
 	if raw == "" {
 		return DefaultLeaseTTL
 	}
-	d, err := time.ParseDuration(raw)
+	// Trim before parsing: shell quoting or a .env line can leave surrounding
+	// whitespace (e.g. BD_LEASE_TTL=" 4h "), which time.ParseDuration rejects
+	// outright — degrading otherwise-plausible operator input to the 5min
+	// default, exactly what this warning path exists to catch (PR #5470
+	// review R2, gastownhall/gascity ga-7uoua).
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: lease.ttl/BD_LEASE_TTL=%q is not a valid duration, using compiled default %v: %v\n", raw, DefaultLeaseTTL, err)
 		return DefaultLeaseTTL
@@ -167,7 +173,7 @@ func FreshRowLock() int64 {
 
 // LeaseTTL is the exported form of leaseTTL: it resolves the lease TTL for the
 // current claim from the context (WithLeaseTTL) or falls back to
-// DefaultLeaseTTL.
+// EffectiveDefaultLeaseTTL.
 func LeaseTTL(ctx context.Context) time.Duration {
 	return leaseTTL(ctx)
 }
