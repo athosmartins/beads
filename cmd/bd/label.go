@@ -133,8 +133,9 @@ func applyLabelEdit(ctx context.Context, issueIDs []string, labels []string, ope
 			IssueID: issueID,
 			Patch:   patch,
 		}); uerr != nil {
+			gerund := labelOperationGerund(operation)
 			return HandleErrorRespectJSON("label %s: %s label '%s' on %s: %v",
-				operation, operation, strings.Join(labels, "', '"), issueID, uerr)
+				gerund, gerund, strings.Join(labels, "', '"), issueID, uerr)
 		}
 		// Marked per issue rather than once after the loop: the edits land one
 		// call at a time, so a request that failed on its third id has still
@@ -151,6 +152,23 @@ const (
 	labelOperationAdded   = "added"
 	labelOperationRemoved = "removed"
 )
+
+// labelOperationGerund returns the present-participle form of a
+// labelOperation* constant, for error messages on a failure path. The past
+// tense constants above are correct on success (that's what happened) but
+// read as a false success report when the same word appears next to a
+// non-nil error — "label removed: ...: connection refused" claims the removal
+// that in fact just failed.
+func labelOperationGerund(operation string) string {
+	switch operation {
+	case labelOperationAdded:
+		return "adding"
+	case labelOperationRemoved:
+		return "removing"
+	default:
+		return operation
+	}
+}
 
 // reportLabelEdit prints what landed, in the shape both routes have always
 // printed it: one JSON row per (issue, label) pair, or one human line per issue
@@ -246,7 +264,7 @@ func removeLabelsByPrefix(ctx context.Context, issueIDs []string, prefix string,
 			IssueID: issueID,
 			Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Remove: byIssue[issueID]}},
 		}); uerr != nil {
-			return HandleErrorRespectJSON("label removed (prefix): %s: %v", issueID, uerr)
+			return HandleErrorRespectJSON("label removing (prefix): %s: %v", issueID, uerr)
 		}
 		commandDidWrite.Store(true)
 	}
@@ -332,6 +350,27 @@ func resolveLabelIssueIDs(ctx context.Context, subcommand string, issueIDs []str
 	return resolved, nil
 }
 
+// resolveIssueIDsForPrefix resolves every positional arg to an issue ID for
+// the --prefix form of `bd label remove`. Unlike the plain add/remove path,
+// --prefix takes no trailing label argument — every positional is an issue
+// ID — so a positional that fails to resolve is reported as a likely
+// mixed-up label argument (e.g. a caller who reflexively kept the old
+// trailing-label habit: `bd label remove bd-1 stale-label --prefix x`)
+// rather than with resolveLabelIssueIDs' "pass one comma-separated argument"
+// hint, which recommends exactly the label-argument syntax --prefix does not
+// take and would only compound the confusion.
+func resolveIssueIDsForPrefix(ctx context.Context, issueIDs []string) ([]string, error) {
+	resolved := make([]string, 0, len(issueIDs))
+	for _, id := range issueIDs {
+		fullID, err := resolveLabelTarget(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("cannot combine --prefix with label arguments: %q is not an issue ID: %w", id, err)
+		}
+		resolved = append(resolved, fullID)
+	}
+	return resolved, nil
+}
+
 //nolint:dupl // labelAddCmd and labelRemoveCmd are similar but serve different operations
 var labelAddCmd = &cobra.Command{
 	Use:           "add [issue-id...] [label[,label...]]",
@@ -381,7 +420,7 @@ var labelRemoveCmd = &cobra.Command{
 
 		prefix, _ := cmd.Flags().GetString("prefix")
 		if prefix != "" {
-			issueIDs, err := resolveLabelIssueIDs(rootCtx, "remove", args)
+			issueIDs, err := resolveIssueIDsForPrefix(rootCtx, args)
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
@@ -580,7 +619,7 @@ func init() {
 	labelListCmd.ValidArgsFunction = issueIDCompletion
 	labelPropagateCmd.ValidArgsFunction = issueIDCompletion
 
-	labelRemoveCmd.Flags().String("prefix", "", "Remove every label matching this prefix instead of an exact label (e.g., 'pool:refused:' removes all pool:refused:* labels). No label positional argument is needed when set.")
+	labelRemoveCmd.Flags().String("prefix", "", "Remove every label matching this prefix instead of an exact label (e.g., 'pool:refused:' removes all pool:refused:* labels). No label positional argument is needed when set. CAUTION: a short prefix removes every match in one transaction, including labels you may not have meant to touch (e.g. --prefix t removes both 'tier:opus' and 'test-needed') — check `bd label list <issue-id>` first if unsure. State-dimension labels (e.g. 'launch:', 'scalegate:') should move via `bd set-state` instead, which this flag bypasses without its event-bead audit trail.")
 
 	labelCmd.AddCommand(labelAddCmd)
 	labelCmd.AddCommand(labelRemoveCmd)
