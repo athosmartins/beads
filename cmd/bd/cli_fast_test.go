@@ -1605,15 +1605,22 @@ func TestCLI_CommentsAddShortID(t *testing.T) {
 		json.Unmarshal([]byte(jsonOut), &issue)
 		fullID := issue["id"].(string)
 
-		// Extract short ID and use only first 4 characters (partial match)
+		// Derive the abbreviation as a strict, one-character-shorter leading
+		// prefix of the real hash — the same derivation
+		// comment_proxied_integration_test.go:247 already uses. The previous
+		// "truncate to 4 chars, only if longer than 4" logic never fired
+		// against a fresh test DB's fixture hashes (min_hash_length unset,
+		// hashes as short as 3 chars), so shortID stayed equal to the full
+		// hash and this subtest was dead-red in its own setup, never reaching
+		// the assertions below (PR #5393 review R2, bee-ghosttrack) — and
+		// mutation P-B (reverting comments.go's resolver back to the
+		// abbreviation-tolerant one) went uncaught as a result.
 		parts := strings.Split(fullID, "-")
-		shortID := parts[len(parts)-1]
-		if len(shortID) > 4 {
-			shortID = shortID[:4] // Use only first 4 chars for partial match
+		hash := parts[len(parts)-1]
+		if len(hash) < 2 {
+			t.Fatalf("test setup: hash %q too short to abbreviate", hash)
 		}
-		if shortID == parts[len(parts)-1] {
-			t.Fatalf("test setup: hash %q too short to truncate into a genuine abbreviation", parts[len(parts)-1])
-		}
+		shortID := hash[:len(hash)-1]
 		t.Logf("Full ID: %s, Partial ID: %s", fullID, shortID)
 
 		// Sanity check: the same abbreviation still works on a READ path
@@ -1894,6 +1901,57 @@ func TestCLI_CommentRmDeleteReservedWordsRejected(t *testing.T) {
 			trimmed := strings.TrimSpace(commentsOut)
 			if trimmed != "[]" && trimmed != "null" {
 				t.Fatalf("expected no comments on bystander issue %s after rejected 'comment %s', got: %s", fullID, word, commentsOut)
+			}
+		})
+	}
+}
+
+// TestCLI_CommentsAddReservedWordRejectedThroughCobraDispatch closes PR #5393
+// review R2's "NEW MINOR — the guard's wiring is untested": comments_add_test.go
+// unit-tests validateCommentsAddArgs directly, and that catches a gutted
+// function body (mutation P-C), but nothing drove "bd comments add
+// <reserved-word> ..." through actual cobra dispatch — unwiring
+// commentsAddCmd's Args field back to cobra.MinimumNArgs(1) left every
+// existing test green (mutation P-D). This runs the real command line, the
+// way a caller or an automated session actually invokes it, for every word in
+// commentReservedIDWords (validateCommentsAddArgs has no singular/plural
+// special-casing, unlike "comment"'s validateCommentArgs, so all four take
+// the same generic-message path and are equally worth covering here).
+func TestCLI_CommentsAddReservedWordRejectedThroughCobraDispatch(t *testing.T) {
+	t.Parallel()
+
+	for _, word := range []string{"list", "add", "rm", "delete"} {
+		t.Run(word, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := setupCLITestDB(t)
+
+			out := runBDInProcess(t, tmpDir, "create", "Bystander issue for comments-add "+word+"-typo", "-p", "1", "--json")
+			jsonStart := strings.Index(out, "{")
+			if jsonStart < 0 {
+				t.Fatalf("No JSON found in create output: %s", out)
+			}
+			var issue map[string]interface{}
+			if err := json.Unmarshal([]byte(out[jsonStart:]), &issue); err != nil {
+				t.Fatalf("Failed to parse create JSON: %v\nOutput: %s", err, out)
+			}
+			fullID := issue["id"].(string)
+
+			stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "comments", "add", word, "accidental stray text")
+			if err == nil {
+				t.Fatalf("expected non-zero exit for 'bd comments add %s ...', got stdout=%q stderr=%q", word, stdout, stderr)
+			}
+			combined := stdout + stderr
+			if !strings.Contains(combined, "not a valid issue id") {
+				t.Errorf("expected a not-a-valid-issue-id refusal, got stdout=%q stderr=%q", stdout, stderr)
+			}
+
+			// The regression check: the bystander issue must have received NO
+			// comment — this is exactly what unwiring commentsAddCmd.Args back
+			// to cobra.MinimumNArgs(1) would silently allow through.
+			commentsOut := runBDInProcess(t, tmpDir, "comments", fullID, "--json")
+			trimmed := strings.TrimSpace(commentsOut)
+			if trimmed != "[]" && trimmed != "null" {
+				t.Fatalf("expected no comments on bystander issue %s after rejected 'comments add %s', got: %s", fullID, word, commentsOut)
 			}
 		})
 	}
