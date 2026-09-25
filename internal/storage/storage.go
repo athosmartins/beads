@@ -411,6 +411,12 @@ type Storage interface {
 	// Work queries
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
+	// GetReadyWorkWithCountsAndTotal is GetReadyWorkWithCounts plus the size
+	// of the whole ready set the page was cut from — the same number
+	// ReadyWorkCounter.CountReadyWork(filter) answers — resolved in the same
+	// read transaction and statements as the page. It is what lets
+	// `bd ready --limit N` print "Showing N of M" without a second pass.
+	GetReadyWorkWithCountsAndTotal(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, int, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 
@@ -689,6 +695,19 @@ type ActiveDatabaseSizer interface {
 // Callers that need to reclaim disk space should type-assert to this interface.
 type GarbageCollector interface {
 	DoltGC(ctx context.Context) error
+}
+
+// FullGarbageCollector provides a full Dolt garbage collection, which collects
+// the old generation as well as the new one.
+//
+// Dolt GC is generational: each pass promotes the chunks reachable at that
+// moment into the old generation, and DoltGC only visits the new generation.
+// After a history rewrite (Flatten, Compact) the orphaned commit chain usually
+// lives in the old generation, so DoltGC reclaims nothing and callers must use
+// DoltGCFull. Prefer DoltGC for periodic hygiene, where a full pass costs
+// minutes on large stores for no extra reclaim.
+type FullGarbageCollector interface {
+	DoltGCFull(ctx context.Context) error
 }
 
 // Flattener squashes all Dolt commit history into a single commit.
