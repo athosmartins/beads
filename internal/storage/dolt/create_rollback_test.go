@@ -48,17 +48,30 @@ func (f *failOnSecondEventInsertTx) ExecContext(ctx context.Context, query strin
 // This test injects the exact failure shape at the exact point PersistLabels
 // hits it (a label's "Added label" event insert returning context.Canceled)
 // against a real Dolt transaction, then rolls back by hand the way
-// DoltStore.withWriteTx does on any callback error (store.go:1195:
-// errors.Join(err, tx.Rollback())). That mirrors withWriteTx's rollback
-// behavior; it does not exercise the wrapper itself — the wrapper the
-// production `bd create` path (cmd/bd/create.go -> writeOps -> ops.Create ->
-// issueOperations.Create -> runIssueOperationTx -> withRetryTx -> withWriteTx)
-// actually runs CreateIssuesInTxWithResult/CreateIssueInTxWithResult under —
-// and checks whether the issue or its first label leaked through anyway.
+// DoltStore.commitWriteTx does on any callback error
+// (errors.Join(err, tx.Rollback()), reached via withWriteTx). That mirrors
+// the rollback half only; it does not exercise the wrapper itself — the
+// wrapper the production `bd create` path (cmd/bd/create.go -> writeOps ->
+// ops.Create -> issueOperations.Create -> runIssueOperationTx -> withRetryTx
+// -> withWriteTx) actually runs
+// CreateIssuesInTxWithResult/CreateIssueInTxWithResult under — and checks
+// whether the issue or its first label leaked through anyway.
 // withRetryTx never retries this failure: context.Canceled matches none of
 // isDoltAutocommitRollbackError/isSerializationError/isRetryableError, so it
 // falls to backoff.Permanent and surfaces to the CLI as a single failed
 // attempt, exactly as reported.
+//
+// Exactly what is and is not mirrored: before calling its callback,
+// commitWriteTx installs three transaction-scoped activations —
+// scopeEventsJournalTransaction, scopeVersionedHistoryTransaction and
+// issueops.ScopeBlockedRecheckTransaction — and on the success path runs a
+// post-commit blocked recheck. The bare BeginTx below registers none of them,
+// so this transaction cannot emit a bd_events_journal or issue_versions row
+// at all (journalEnabled falls back to the unregistered-tx default, false).
+// The three counts asserted below — issues, labels, events — are therefore
+// the only ones this shape can meaningfully test: adding a journal or
+// issue_versions cleanliness assertion here, or moving the injection point
+// downstream of those seams, would pass vacuously.
 //
 // What this test does NOT cover: the injected context.Canceled never
 // reaches the server, so the real transaction stays alive throughout and is
@@ -117,8 +130,10 @@ func TestCreateIssueRollsBackFullyOnLabelEventFailure(t *testing.T) {
 		t.Fatal("fault injector never fired (eventInsertCount never reached 2) — test setup is broken and proves nothing")
 	}
 
-	// This is exactly what DoltStore.withWriteTx does on any callback error:
-	// unconditionally roll back (internal/storage/dolt/store.go).
+	// The rollback half of what DoltStore.commitWriteTx does on any callback
+	// error: unconditionally roll back (errors.Join(err, tx.Rollback()),
+	// reached via withWriteTx). The transaction scopes this hand-rolled tx
+	// does not install are named in the doc comment above.
 	if err := realTx.Rollback(); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
@@ -186,9 +201,9 @@ func (c *cancelOnSecondEventInsertTx) ExecContext(ctx context.Context, query str
 // text — "...context canceled / transaction has already been committed or
 // rolled back" — is two different errors from two different sources: the
 // failing ExecContext call (context.Canceled), and a *later* tx.Rollback()
-// call — withWriteTx's own errors.Join(err, tx.Rollback()) cleanup
-// (store.go:1195) — returning sql.ErrTxDone because the background goroutine
-// had, by then, already won the race and rolled back for real.
+// call — the errors.Join(err, tx.Rollback()) cleanup in commitWriteTx,
+// reached via withWriteTx — returning sql.ErrTxDone because the background
+// goroutine had, by then, already won the race and rolled back for real.
 //
 // This test reproduces that: it cancels a real, BeginTx-scoped context
 // mid-transaction (not a fabricated per-call error), confirms sql.ErrTxDone
@@ -266,11 +281,14 @@ func TestCreateIssueRollsBackFullyOnContextCancelMidTransaction(t *testing.T) {
 		t.Fatalf("timed out waiting for database/sql to tear down the tx after context cancel; last probe error: %v", probeErr)
 	}
 
-	// This is exactly what withWriteTx's own errors.Join(err, tx.Rollback())
-	// does on the callback error above (store.go:1195) — and, matching the
-	// original production report verbatim, it returns sql.ErrTxDone here
-	// because the background rollback just confirmed above already beat it
-	// to the punch.
+	// The same rollback half commitWriteTx's errors.Join(err, tx.Rollback())
+	// performs on a callback error, reached via withWriteTx — and, matching
+	// the original production report verbatim, it returns sql.ErrTxDone here
+	// because the background rollback just confirmed above already beat it to
+	// the punch. As in test 1 this hand-rolled tx installs none of
+	// commitWriteTx's three transaction scopes; driving the real wrapper is
+	// deliberately out of scope here, because the behavior under test is
+	// database/sql tearing the transaction down independently of any wrapper.
 	rollbackErr := realTx.Rollback()
 	if !errors.Is(rollbackErr, sql.ErrTxDone) {
 		t.Fatalf("rollback error = %v, want sql.ErrTxDone (database/sql had already rolled back on its own after the context was canceled)", rollbackErr)
