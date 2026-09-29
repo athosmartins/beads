@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"sync"
+	"path/filepath"
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
@@ -38,8 +38,8 @@ func effectiveSizeCapMB() int {
 // backup destination fails "not a valid dolt repository" because there is
 // no .dolt for the CLI to find). Absent a cap, the destination can only
 // grow forever until disk fills (ga-y6gjv, the 2026-06-19 outage: 43GB
-// backup dir from a 1.7GB store). getDirSize/formatBytes are shared with
-// runCompactDolt (compact.go).
+// backup dir from a 1.7GB store). formatBytes is shared with
+// runCompactDolt (compact.go); getDirSize is defined below.
 func backupSizeCapExceeded(dir string) (exceeded bool, size int64, err error) {
 	capMB := effectiveSizeCapMB()
 	if capMB == 0 {
@@ -52,6 +52,23 @@ func backupSizeCapExceeded(dir string) (exceeded bool, size int64, err error) {
 	return size >= int64(capMB)*1024*1024, size, nil
 }
 
+// walkBackupDestination is getDirSize, indirected so tests can inject the
+// mid-walk ENOENT that a real filesystem produces only under a race.
+var walkBackupDestination = getDirSize
+
+// backupDestinationSize measures dir for the status readers. Only a
+// destination that does not exist yet counts as empty; every walk error is
+// returned, ENOENT included. getDirSize aborts on the first per-entry
+// error, so a chunk file removed between listing its directory and
+// stat-ing it would otherwise read as 0 bytes: a false all-clear on a
+// destination that may be well over its cap.
+func backupDestinationSize(dir string) (int64, error) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return 0, nil
+	}
+	return walkBackupDestination(dir)
+}
+
 // showSizeCapStatus prints size-cap info as part of `bd backup status`
 // (ga-y6gjv PR #6071 review: status previously said nothing about the cap,
 // so an agent/CI caller watching a paused destination saw only a
@@ -59,16 +76,22 @@ func backupSizeCapExceeded(dir string) (exceeded bool, size int64, err error) {
 func showSizeCapStatus(dir string) {
 	capMB := effectiveSizeCapMB()
 	if capMB == 0 {
-		fmt.Println("  Size cap: disabled (backup.size-cap-mb=0)")
+		// Echo the configured value rather than a literal 0: an
+		// unparseable one ("2048MB") also disables the cap (see
+		// effectiveSizeCapMB), and this line is where an operator
+		// debugging that looks.
+		fmt.Printf("  Size cap: disabled (backup.size-cap-mb=%s)\n", config.GetString("backup.size-cap-mb"))
 		return
 	}
-	size, err := getDirSize(dir)
+	size, err := backupDestinationSize(dir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			debug.Logf("backup status: size cap check failed (non-fatal): %v\n", err)
-			return
-		}
-		size = 0
+		// Say so rather than dropping the line: a silent omission
+		// looks identical to "no cap configured" to an operator
+		// debugging a permission problem on the destination, and
+		// --json already reports this case (showSizeCapStatusJSON).
+		debug.Logf("backup status: size cap check failed (non-fatal): %v\n", err)
+		fmt.Printf("  Size cap: unavailable (%v)\n", err)
+		return
 	}
 	capBytes := int64(capMB) * 1024 * 1024
 	if size >= capBytes {
@@ -87,12 +110,17 @@ func showSizeCapStatusJSON(dir string) map[string]interface{} {
 	if capMB == 0 {
 		return map[string]interface{}{"enabled": false}
 	}
-	size, err := getDirSize(dir)
+	size, err := backupDestinationSize(dir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return map[string]interface{}{"enabled": true, "cap_mb": capMB, "error": err.Error()}
+		// exceeded is explicitly null, not omitted: a consumer that
+		// reads a missing key as false would see "not exceeded"
+		// during exactly the failure that makes it unmeasurable.
+		return map[string]interface{}{
+			"enabled":  true,
+			"cap_mb":   capMB,
+			"error":    err.Error(),
+			"exceeded": nil,
 		}
-		size = 0
 	}
 	capBytes := int64(capMB) * 1024 * 1024
 	return map[string]interface{}{
@@ -103,72 +131,102 @@ func showSizeCapStatusJSON(dir string) map[string]interface{} {
 	}
 }
 
-// capWarnFallback caches, per backup directory, the in-process time of the
-// last size-cap warning. It exists for the case maybeWarnBackupSizeCap
-// itself creates: the destination directory is full, so persisting
-// backup_state.json into it also fails. A short-lived bd CLI invocation
-// doesn't need this (the process exits either way), but a long-lived bd
-// process that keeps calling maybeAutoBackup for the same destination
-// (e.g. internal/storage/dbproxy's server mode) would otherwise re-warn on
-// every single call instead of respecting backup.size-warn-interval,
-// because the on-disk throttle state can never stick while the write
-// that's supposed to record it is itself failing for the same reason as
-// the backup. Keyed by dir (not a single scalar) so unrelated destinations
-// — and unrelated tests — never share a throttle.
-var (
-	capWarnFallbackMu sync.Mutex
-	capWarnFallback   = map[string]time.Time{}
-)
-
-func capWarnFallbackFor(dir string) time.Time {
-	capWarnFallbackMu.Lock()
-	defer capWarnFallbackMu.Unlock()
-	return capWarnFallback[dir]
-}
-
-func recordCapWarnFallback(dir string, at time.Time) {
-	capWarnFallbackMu.Lock()
-	defer capWarnFallbackMu.Unlock()
-	capWarnFallback[dir] = at
-}
-
-// maybeWarnBackupSizeCap announces (to stderr, throttled) that auto-backup
-// is paused because the destination exceeds its size cap, and persists the
-// throttle so the warning isn't repeated on every subsequent bd command —
-// only once per backup.size-warn-interval (default 24h). Mirrors the
-// "persist the attempt time even on a skip" pattern already used for the
-// backup interval throttle itself (runBackupExport's failure path,
-// wy-zrmqr) so a caller that's paused for days doesn't get spammed.
+// warnBackupSizeCapUnavailable reports, on stderr, that the cap could not
+// be measured and the backup is proceeding uncapped.
 //
-// Never returns an error: a failure to persist the warning state must not
-// block the (already-decided) skip of the backup attempt itself.
-func maybeWarnBackupSizeCap(dir string, state *backupState, size int64) {
+// getDirSize returns the first per-file error straight out of its
+// filepath.Walk callback, so one unreadable entry — or a chunk file removed
+// mid-walk — aborts the whole measurement. maybeAutoBackup deliberately
+// fails OPEN there (blocking backups outright on an unreadable destination
+// would be worse), but a debug-only line made that silent: the cap can
+// disable itself and restore the unbounded growth this feature exists to
+// prevent with nothing on the operator's terminal, while `bd backup status
+// --json` reports the very same error (ga-y6gjv PR #6071 review).
+//
+// It is throttled by the backup interval, not by the PAUSED warning's
+// LastCapWarnAt slot — spending that slot here would let a transient walk
+// error suppress the more important "auto-backup PAUSED" notice for a full
+// warn interval. maybeAutoBackup reaches the walk only after the interval
+// throttle and change detection have both passed, and re-arms
+// state.Timestamp itself after this warning rather than relying on the
+// fall-through into runBackupExport: not every runBackupExport exit
+// persists it (a failed post-sync GetCurrentCommit returns without saving
+// state), and the next command would then walk and warn again. That bounds
+// this warning to once per backup.interval whenever backup_state.json can
+// be written.
+func warnBackupSizeCapUnavailable(err error) {
+	if !isQuiet() && !jsonOutput {
+		fmt.Fprintf(os.Stderr,
+			"Warning: backup size cap could not be measured (%v); "+
+				"proceeding without the cap. Auto-backup is unbounded until this clears.\n", err)
+	}
+	debug.Logf("backup: size cap check failed (non-fatal): %v\n", err)
+}
+
+// pauseAutoBackupForSizeCap records the skip that happens when the
+// destination is over backup.size-cap-mb, and announces it to stderr at
+// most once per backup.size-warn-interval (default 24h).
+//
+// It re-arms the interval throttle (state.Timestamp) even though no backup
+// ran, leaving LastDoltCommit untouched exactly as runBackupExport's own
+// failure path does (backup_export.go, wy-zrmqr). Without that, the paused
+// state is self-perpetuating and pathological: Timestamp is only ever
+// advanced by a backup attempt, so a destination that is over cap — by
+// definition the largest one — would pay the full getDirSize walk on every
+// single bd command, forever, until an operator intervenes (ga-y6gjv
+// PR #6071 review). LastDoltCommit is deliberately left alone so change
+// detection still sees the pending work once the cap is raised.
+//
+// The warn timestamp, by contrast, is recorded only when the message was
+// actually printed. --json/--quiet callers — i.e. every agent-driven
+// command — would otherwise consume the 24h slot silently and the
+// human-visible warning could effectively never fire; those callers have
+// `bd backup status --json`'s size_cap field instead.
+//
+// Never returns an error: a failure to persist must not block the
+// (already-decided) skip of the backup attempt itself.
+func pauseAutoBackupForSizeCap(dir string, state *backupState, size int64) {
 	warnInterval := config.GetDuration("backup.size-warn-interval")
 	if warnInterval == 0 {
 		warnInterval = 24 * time.Hour
 	}
 
+	state.Timestamp = time.Now().UTC()
+
 	lastWarn := state.LastCapWarnAt
-	if fb := capWarnFallbackFor(dir); fb.After(lastWarn) {
-		lastWarn = fb
-	}
-	if !lastWarn.IsZero() && time.Since(lastWarn) < warnInterval {
-		debug.Logf("backup: size cap exceeded (%s), auto-backup paused (warning throttled)\n", formatBytes(size))
-		return
+	throttled := !lastWarn.IsZero() && time.Since(lastWarn) < warnInterval
+	announce := !throttled && !isQuiet() && !jsonOutput
+	if announce {
+		state.LastCapWarnAt = time.Now().UTC()
 	}
 
-	now := time.Now().UTC()
-	state.LastCapWarnAt = now
-	recordCapWarnFallback(dir, now)
 	if err := saveBackupState(dir, state); err != nil {
-		debug.Logf("backup: failed to persist size-cap warning state: %v\n", err)
+		debug.Logf("backup: failed to persist size-cap skip state: %v\n", err)
 	}
-	if !isQuiet() && !jsonOutput {
+
+	if announce {
 		fmt.Fprintf(os.Stderr,
 			"Warning: auto-backup PAUSED — destination %s has reached %s. "+
 				"No further syncs will run until you raise backup.size-cap-mb "+
 				"or switch to a fresh destination with `bd backup init <new-path>`.\n",
 			dir, formatBytes(size))
+		debug.Logf("backup: size cap exceeded (%s), auto-backup paused\n", formatBytes(size))
+		return
 	}
-	debug.Logf("backup: size cap exceeded (%s), auto-backup paused\n", formatBytes(size))
+	debug.Logf("backup: size cap exceeded (%s), auto-backup paused (warning throttled)\n", formatBytes(size))
+}
+
+// getDirSize calculates the total size of a directory recursively.
+func getDirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }

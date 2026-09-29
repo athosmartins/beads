@@ -28,8 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guarantees a deleted destination is cleanly recreated by the next sync, and
   the server-side backup remote stays registered against that path; it now
   points at `backup.size-cap-mb` / `bd backup init <new-path>` instead. The
-  size-cap check itself runs after the interval throttle rather than before,
-  so it costs nothing on the common (throttled) path. `backup.size-warn-interval`
+  size-cap check itself runs after both the interval throttle and change
+  detection, so it costs nothing on any path that is not about to sync — an
+  idle workspace never reaches it at all, and a paused destination re-arms
+  the interval throttle on the skip, so it is measured at most once per
+  `backup.interval` rather than on every command. `backup.size-warn-interval`
   (default 24h) controls how often the pause is re-announced. Manual `bd
   backup` / `bd backup sync` are not capped.
 
