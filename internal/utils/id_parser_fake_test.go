@@ -174,3 +174,60 @@ func TestResolvePartialIDExact_AbbreviationRefusalIsDistinguishableFromNotFound(
 		t.Errorf("ResolvePartialIDExact(%q) = (%q, %v); want (%q, nil)", "hq-a3f8e9", got, err, "hq-a3f8e9")
 	}
 }
+
+// TestResolvePartialIDExact_RefusesSentinelTokens pins where #6215's bare-
+// sentinel guard has to live once this PR splits the resolver in two.
+//
+// #6215 (base) refuses "null"/"undefined"/"none"/"nil"/"" before any lookup,
+// and put that guard in ResolvePartialID because it was then the only
+// ID-resolution entry point in the repository. This PR adds a second one,
+// ResolvePartialIDExact, so the guard belongs in the shared resolvePartialID
+// body — which is what keeps #6215's own stated guarantee ("bd update null,
+// bd comment null and every other command that resolves an ID now fail before
+// any lookup") true for the comment write paths this PR routes through the
+// exact-only resolver.
+//
+// Nothing else covers that: #6215's id_parser_sentinel_test.go exercises only
+// ResolvePartialID, so leaving the guard in the exported wrapper alone keeps
+// every one of its assertions green while a sentinel reaching the exact path
+// degrades into an ErrAbbreviatedIDNotAllowed that names an unrelated decoy
+// issue — telling the caller to "use the full id" for a token that is really
+// just their selector having matched nothing.
+func TestResolvePartialIDExact_RefusesSentinelTokens(t *testing.T) {
+	ctx := context.Background()
+	// hq-null3t0 is #6215's own decoy shape: a real issue whose hash begins
+	// with "null", so an unguarded sentinel is a live abbreviation match here
+	// rather than a plain not-found.
+	store := &fakeResolverStore{
+		issues: []fakeIssue{
+			{id: "hq-null3t0", ephemeral: false},
+			{id: "hq-165vq", ephemeral: false},
+		},
+		config: map[string]string{"issue_prefix": "hq"},
+	}
+
+	for _, input := range []string{"null", "NULL", " null ", "undefined", "none", "nil", "", "   "} {
+		got, err := utils.ResolvePartialIDExact(ctx, store, input)
+		if err == nil {
+			t.Errorf("ResolvePartialIDExact(%q) = (%q, nil); want #6215's sentinel refusal", input, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), "refusing") {
+			t.Errorf("ResolvePartialIDExact(%q) error = %q; want #6215's sentinel refusal (guard did not fire on the exact path)", input, err)
+		}
+		if errors.Is(err, utils.ErrAbbreviatedIDNotAllowed) {
+			t.Errorf("ResolvePartialIDExact(%q) error = %q; a tooling sentinel must be refused as such, not reported as a refused abbreviation of hq-null3t0", input, err)
+		}
+		if strings.Contains(err.Error(), "hq-null3t0") {
+			t.Errorf("ResolvePartialIDExact(%q) error = %q; must not name the decoy issue", input, err)
+		}
+	}
+
+	// Over-refusal guard, the twin of #6215's accepted-inputs test: an id that
+	// merely CONTAINS a sentinel token must still resolve exactly.
+	for _, input := range []string{"hq-null3t0", "null3t0"} {
+		if got, err := utils.ResolvePartialIDExact(ctx, store, input); err != nil || got != "hq-null3t0" {
+			t.Errorf("ResolvePartialIDExact(%q) = (%q, %v); want (%q, nil) — the guard must match the whole token, not a prefix", input, got, err, "hq-null3t0")
+		}
+	}
+}
