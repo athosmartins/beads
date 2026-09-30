@@ -250,8 +250,22 @@ func TestProxiedServerComment(t *testing.T) {
 		if err == nil {
 			t.Fatalf("bd comment %s unexpectedly succeeded in proxied mode\nstdout:\n%s\nstderr:\n%s", abbrev, stdout, stderr)
 		}
-		if !strings.Contains(stdout+stderr, abbrev) {
-			t.Errorf("expected the refusal to name the rejected id %s, got stdout=%q stderr=%q", abbrev, stdout, stderr)
+		// Asserted as the whole message, not strings.Contains(id): the proxied
+		// route resolves through one exact "WHERE id = ?", so it cannot tell an
+		// abbreviation of a real issue from an id that names nothing, and it
+		// deliberately keeps the same "not found" wording for both — where the
+		// embedded route says "id abbreviations are not accepted on comment
+		// writes" (comment.go). Giving the proxied plane the truthful wording
+		// would mean probing for abbreviation matches on a write path, which is
+		// the resolution behaviour this PR exists to remove. A Contains(id)
+		// assertion passes on either wording, so it would leave that asymmetry
+		// untested; pinning the exact text makes it a deliberate choice that
+		// breaks loudly if either side moves.
+		if got, want := strings.TrimSpace(stderr), "Error: issue "+abbrev+" not found"; got != want {
+			t.Errorf("abbreviated-ID stderr = %q, want %q", got, want)
+		}
+		if stdout != "" {
+			t.Errorf("abbreviated-ID stdout = %q, want empty", stdout)
 		}
 
 		// The regression check: neither the abbreviation's real target nor an

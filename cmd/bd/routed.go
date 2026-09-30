@@ -158,16 +158,37 @@ func resolveAndGetIssueForMutationExact(ctx context.Context, localStore storage.
 		return result, nil
 	}
 
+	// The routed tiers resolve with utils.ResolvePartialIDExact too, so each
+	// can mint utils.ErrAbbreviatedIDNotAllowed of its own — the abbreviation
+	// names a real issue in the routed rig rather than here — and both
+	// wrappers hand that error back unwrapped. Keep the first such refusal:
+	// the local error is only a plain not-found, and returning it would tell
+	// the caller no issue matches an id a routed store demonstrably holds,
+	// which is exactly the falsehood the sentinel exists to prevent.
+	var abbrevErr error
+
 	if isNotFoundErr(err) {
-		if prefixResult, prefixErr := resolveViaPrefixRoutingWithAccess(ctx, id, true, true); prefixErr == nil {
+		prefixResult, prefixErr := resolveViaPrefixRoutingWithAccess(ctx, id, true, true)
+		if prefixErr == nil {
 			return prefixResult, nil
+		}
+		if errors.Is(prefixErr, utils.ErrAbbreviatedIDNotAllowed) {
+			abbrevErr = prefixErr
 		}
 	}
 
 	if isNotFoundErr(err) {
-		if autoResult, autoErr := resolveViaAutoRouting(ctx, localStore, id, true); autoErr == nil {
+		autoResult, autoErr := resolveViaAutoRouting(ctx, localStore, id, true)
+		if autoErr == nil {
 			return autoResult, nil
 		}
+		if abbrevErr == nil && errors.Is(autoErr, utils.ErrAbbreviatedIDNotAllowed) {
+			abbrevErr = autoErr
+		}
+	}
+
+	if abbrevErr != nil {
+		return nil, abbrevErr
 	}
 
 	return nil, err
