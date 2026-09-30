@@ -473,9 +473,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issues by label shape; `label remove` had no equivalent for *stripping* a
   whole label family (e.g. every `pool:refused:*` reason label) — callers had
   to fetch the labels themselves and issue one `label remove` per exact name.
-  `--prefix` resolves the matching labels per issue and removes them in a
-  single transaction; `bd label remove <id> --prefix pool:refused:` replaces
-  that fetch-then-loop. Routed through the same `issueops.Lifecycle`/
+  `--prefix` resolves the matching labels per issue and removes that issue's
+  whole matching set in a single edit; `bd label remove <id> --prefix
+  pool:refused:` replaces that fetch-then-loop. Routed through the same `issueops.Lifecycle`/
   `issueops.Reader` roles as a plain `label remove`, so it works identically
   on the embedded and proxied-server (`bd serve`) storage modes.
 

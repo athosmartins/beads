@@ -156,7 +156,8 @@ func applyLabelEdit(ctx context.Context, issueIDs []string, labels []string, ope
 		if reader != nil {
 			details, gerr := reader.Get(ctx, issueops.GetRequest{ID: issueID})
 			if gerr != nil {
-				return HandleErrorRespectJSON("label %s: reading labels on %s: %v", operation, issueID, gerr)
+				return HandleErrorRespectJSON("label %s: reading labels on %s: %v",
+					labelOperationGerund(operation), issueID, gerr)
 			}
 			before = make(map[string]bool, len(details.Labels))
 			for _, label := range details.Labels {
@@ -177,7 +178,7 @@ func applyLabelEdit(ctx context.Context, issueIDs []string, labels []string, ope
 		// call at a time, so a request that failed on its third id has still
 		// written its first two and the deferred commit has to know about them.
 		commandDidWrite.Store(true)
-		outcome := labelEditOutcome{issueID: issueID, changed: make([]bool, len(labels))}
+		outcome := labelEditOutcome{issueID: issueID, labels: labels, changed: make([]bool, len(labels))}
 		for i, label := range labels {
 			switch {
 			case !result.Changed:
@@ -192,7 +193,7 @@ func applyLabelEdit(ctx context.Context, issueIDs []string, labels []string, ope
 		}
 		outcomes = append(outcomes, outcome)
 	}
-	return reportLabelEdit(outcomes, labels, operation, jsonOutput)
+	return reportLabelEdit(outcomes, operation, jsonOutput)
 }
 
 // The two label edits this command performs, spelled once. They are the words
@@ -206,10 +207,15 @@ const (
 	labelStatusUnchanged  = "unchanged"
 )
 
-// labelEditOutcome is what one issue's edit did: changed[i] reports whether
-// the edit's i-th label actually moved.
+// labelEditOutcome is what one issue's edit did: labels is the set the edit
+// named for THAT issue and changed[i] reports whether labels[i] actually
+// moved. The label set is per issue rather than one shared slice because
+// --prefix resolves a different set for each issue from its own current
+// labels; applyLabelEdit's fixed caller-supplied set is the degenerate case
+// where every outcome repeats it.
 type labelEditOutcome struct {
 	issueID string
+	labels  []string
 	changed []bool
 }
 
@@ -236,11 +242,14 @@ func labelOperationGerund(operation string) string {
 // as such — status "unchanged", and a line of its own — rather than as the
 // operation, so a no-op cannot be read as a confirmation (GH#5988). It is
 // still not an error: the exit code stays 0 so idempotent callers keep working.
-func reportLabelEdit(outcomes []labelEditOutcome, labels []string, operation string, jsonOut bool) error {
+func reportLabelEdit(outcomes []labelEditOutcome, operation string, jsonOut bool) error {
 	if jsonOut {
-		results := make([]map[string]interface{}, 0, len(outcomes)*len(labels))
+		// One row per (issue, label) pair; the hint is the one-label-per-issue
+		// floor rather than an exact count, since each outcome carries its own
+		// label set and append grows from there.
+		results := make([]map[string]interface{}, 0, len(outcomes))
 		for _, outcome := range outcomes {
-			for i, label := range labels {
+			for i, label := range outcome.labels {
 				status := operation
 				if !outcome.changed[i] {
 					status = labelStatusUnchanged
@@ -260,7 +269,7 @@ func reportLabelEdit(outcomes []labelEditOutcome, labels []string, operation str
 	}
 	for _, outcome := range outcomes {
 		var moved, unmoved []string
-		for i, label := range labels {
+		for i, label := range outcome.labels {
 			if outcome.changed[i] {
 				moved = append(moved, label)
 			} else {
@@ -303,26 +312,37 @@ func labelNoun(labels []string, singular, plural string) string {
 // issueops.Reader, since different issues may carry different prefix-matching
 // labels — so the loop is one Get plus one Update per issue rather than one
 // shared patch for all of them.
+//
+// The report goes through reportLabelEdit, the same handler the plain path
+// uses, so a removal this call did not actually make is reported as
+// "unchanged" rather than as a removal (GH#5988). Reimplementing the report
+// here is what let the pre-review version of this function claim removals off
+// its pre-read snapshot.
 func removeLabelsByPrefix(ctx context.Context, issueIDs []string, prefix string, jsonOut bool) error {
 	reader, err := openIssueReader()
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
-	type removal struct {
+	// Grouped per issue from the start: one LabelPatch.Remove applies every
+	// matching label for that issue in one Update, which is applyLabelEdit's
+	// "one call per issue, one patch per call" contract. issueIDs carries no
+	// duplicates (resolveIssueIDsForPrefix collapses them), so this is one Get
+	// and one Update per distinct issue named on the command line.
+	type prefixTarget struct {
 		issueID string
-		label   string
+		labels  []string
 	}
-	var removals []removal
+	var targets []prefixTarget
 	for _, issueID := range issueIDs {
 		details, gerr := reader.Get(ctx, issueops.GetRequest{ID: issueID})
 		if gerr != nil {
 			return HandleErrorRespectJSON("getting labels for %s: %v", issueID, gerr)
 		}
-		for _, label := range labelsWithPrefix(details.Labels, prefix) {
-			removals = append(removals, removal{issueID: issueID, label: label})
+		if matched := labelsWithPrefix(details.Labels, prefix); len(matched) > 0 {
+			targets = append(targets, prefixTarget{issueID: issueID, labels: matched})
 		}
 	}
-	if len(removals) == 0 {
+	if len(targets) == 0 {
 		if jsonOut {
 			return outputJSON([]map[string]interface{}{})
 		}
@@ -338,44 +358,36 @@ func removeLabelsByPrefix(ctx context.Context, issueIDs []string, prefix string,
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
-	// Grouped per issue (rather than one call per removal) because a single
-	// LabelPatch.Remove already de-duplicates and applies every label for
-	// that issue in one Update — matching applyLabelEdit's "one call per
-	// issue, one patch per call" contract instead of one call per label.
-	byIssue := make(map[string][]string)
-	var order []string
-	for _, r := range removals {
-		if _, ok := byIssue[r.issueID]; !ok {
-			order = append(order, r.issueID)
-		}
-		byIssue[r.issueID] = append(byIssue[r.issueID], r.label)
-	}
-	for _, issueID := range order {
-		if _, uerr := lifecycle.Update(ctx, issueops.UpdateRequest{
+	outcomes := make([]labelEditOutcome, 0, len(targets))
+	for _, target := range targets {
+		result, uerr := lifecycle.Update(ctx, issueops.UpdateRequest{
 			Actor:   actor,
-			IssueID: issueID,
-			Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Remove: byIssue[issueID]}},
-		}); uerr != nil {
-			return HandleErrorRespectJSON("label removing (prefix): %s: %v", issueID, uerr)
+			IssueID: target.issueID,
+			Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Remove: target.labels}},
+		})
+		if uerr != nil {
+			return HandleErrorRespectJSON("label removing (prefix): %s: %v", target.issueID, uerr)
 		}
 		commandDidWrite.Store(true)
-	}
-
-	if jsonOut {
-		results := make([]map[string]interface{}, 0, len(removals))
-		for _, r := range removals {
-			results = append(results, map[string]interface{}{
-				"status":   "removed",
-				"issue_id": r.issueID,
-				"label":    r.label,
-			})
+		// WHICH LABELS ACTUALLY MOVED, derived from the write rather than from
+		// the Get that chose them. Every label in target.labels was on the
+		// issue when it was read, so UpdateResult.Changed answers for the
+		// whole set at once: false means the role wrote nothing and none of
+		// them moved. Per-label attribution is best-effort for the reason
+		// applyLabelEdit states at length — the read is outside the write
+		// transaction — but the claim that cannot be made any more is
+		// "removed" for an edit that wrote nothing at all.
+		changed := make([]bool, len(target.labels))
+		for i := range changed {
+			changed[i] = result.Changed
 		}
-		return outputJSON(results)
+		outcomes = append(outcomes, labelEditOutcome{
+			issueID: target.issueID,
+			labels:  target.labels,
+			changed: changed,
+		})
 	}
-	for _, r := range removals {
-		fmt.Printf("%s Removed label '%s' from %s\n", ui.RenderPass("✓"), r.label, r.issueID)
-	}
-	return nil
+	return reportLabelEdit(outcomes, labelOperationRemoved, jsonOut)
 }
 
 // parseLabelArgs splits positional args into issue IDs and labels. The final
@@ -451,13 +463,32 @@ func resolveLabelIssueIDs(ctx context.Context, subcommand string, issueIDs []str
 // rather than with resolveLabelIssueIDs' "pass one comma-separated argument"
 // hint, which recommends exactly the label-argument syntax --prefix does not
 // take and would only compound the confusion.
+//
+// That hint is SPECULATIVE, so it is gated on the same condition as the twin's:
+// only a line carrying more than one positional can plausibly have ended with
+// a stray label. A single positional that does not resolve is just a bad issue
+// ID — usually a typo or a deleted issue — and blaming an argument mistake the
+// caller did not make sends them looking for the wrong thing.
+//
+// Duplicate ids collapse. Two positionals naming the same issue (directly or
+// through different resolvable forms) are one issue to remove labels from, and
+// leaving the repeat in would make the caller pay a second Get and read a
+// second report line for one edit.
 func resolveIssueIDsForPrefix(ctx context.Context, issueIDs []string) ([]string, error) {
 	resolved := make([]string, 0, len(issueIDs))
+	seen := make(map[string]bool, len(issueIDs))
 	for _, id := range issueIDs {
 		fullID, err := resolveLabelTarget(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("cannot combine --prefix with label arguments: %q is not an issue ID: %w", id, err)
+			if len(issueIDs) > 1 {
+				return nil, fmt.Errorf("cannot combine --prefix with label arguments: %q is not an issue ID: %w", id, err)
+			}
+			return nil, fmt.Errorf("resolving issue ID %q: %w", id, err)
 		}
+		if seen[fullID] {
+			continue
+		}
+		seen[fullID] = true
 		resolved = append(resolved, fullID)
 	}
 	return resolved, nil
@@ -954,7 +985,7 @@ func init() {
 	labelListCmd.ValidArgsFunction = issueIDCompletion
 	labelPropagateCmd.ValidArgsFunction = issueIDCompletion
 
-	labelRemoveCmd.Flags().String("prefix", "", "Remove every label matching this prefix instead of an exact label (e.g., 'pool:refused:' removes all pool:refused:* labels). No label positional argument is needed when set. CAUTION: a short prefix removes every match in one transaction, including labels you may not have meant to touch (e.g. --prefix t removes both 'tier:opus' and 'test-needed') — check `bd label list <issue-id>` first if unsure. State-dimension labels (e.g. 'launch:', 'scalegate:') should move via `bd set-state` instead, which this flag bypasses without its event-bead audit trail.")
+	labelRemoveCmd.Flags().String("prefix", "", "Remove every label matching this prefix instead of an exact label (e.g., 'pool:refused:' removes all pool:refused:* labels). No label positional argument is needed when set. CAUTION: a short prefix removes every match on an issue in a single edit, including labels you may not have meant to touch (e.g. --prefix t removes both 'tier:opus' and 'test-needed') — check `bd label list <issue-id>` first if unsure. State-dimension labels (e.g. 'launch:', 'scalegate:') should move via `bd set-state` instead, which this flag bypasses without its event-bead audit trail.")
 
 	labelRenameCmd.Flags().Bool("dry-run", false, "Preview the blast radius without renaming anything (merged count is a snapshot intersection, not authoritative - see --help)")
 
