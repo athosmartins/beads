@@ -17,10 +17,66 @@ if [ -n "$staged_go_files" ]; then
     echo "$staged_go_files" | xargs gofmt -w
     echo "$staged_go_files" | xargs git add
 
-    # Lint changed code with auto-fix; block on remaining issues.
-    # CGO_ENABLED=0 avoids typecheck failures from CGO-only dependencies
-    # (e.g., dolthub/go-icu-regex) that require system headers not always present.
-    CGO_ENABLED=0 $GOLANGCI_LINT run --new-from-rev=HEAD --fix || exit 1
+    # --- ga-opj0hnt: the lint runs under the city's heavy-guard -------------------------------
+    # 31/10: a commit here started a cold `go run golangci-lint@v2.10.1` on the mini and the free
+    # disk went 7.3 -> 5.0 GB in 4 minutes (Dolt is at risk of ENOSPC under ~5 GB; 17/10, ga-vln2py).
+    # So the lint goes through scripts/heavy-guard.sh of the city: a floor on the free disk before
+    # it starts, and a watch on the disk while it runs.
+    #   - pre-built linter (pinned_lint_bin below): label "pre-commit golangci-lint" = the "heavy"
+    #     floor (6 GB); nothing is compiled except the typecheck of the repo;
+    #   - fallback `go run`: label "go-build ..." = the Go-class floor (13 GB). On the mini that
+    #     means "refused" unless the pre-built linter qualifies. That is intended: it is the case
+    #     that filled the disk. The refusal says what to do (free disk / build the linter).
+    # The guard's exit code is the hook's exit code (75 disk low, 76 disk unknown, 78 stopped by the
+    # watch, 79 busy), so a refusal is never mistaken for "the linter found issues" (1).
+    GOLANGCI_LINT_WANT="${GOLANGCI_LINT##*@v}"   # the pinned version comes only from GOLANGCI_LINT above
+
+    # Prints the path of a pre-built golangci-lint that is safe to use, or nothing.
+    # Safe = executable, exactly the pinned version, and built with a Go at least as new as the
+    # `go` directive of go.mod (an older build panics on this module's code).
+    # Every doubt prints nothing: the caller then takes the guarded `go run`, never an unchecked binary.
+    pinned_lint_bin() {
+        local bin mod_go ver_line have_ver built_go oldest re
+        bin="${GOLANGCI_LINT_BIN:-${HOME:-/nonexistent}/go/bin/golangci-lint}"
+        # vazio → no such file; falhou/ilegível → not executable: both print nothing (go run fallback)
+        [ -x "$bin" ] || return 0
+        # vazio → no `go` directive; falhou/ilegível → go.mod unreadable: both print nothing (go run fallback)
+        mod_go=$(awk '$1 == "go" { print $2; exit }' go.mod 2>/dev/null) || mod_go=""
+        [ -n "$mod_go" ] || return 0
+        # vazio → no output; falhou/ilegível → --version fails or is not the usual line: nothing (go run fallback)
+        ver_line=$("$bin" --version 2>/dev/null) || ver_line=""
+        re='^golangci-lint has version ([0-9][0-9.]*) built with go([0-9][0-9.]*)'
+        [[ "$ver_line" =~ $re ]] || return 0
+        have_ver="${BASH_REMATCH[1]}"
+        built_go="${BASH_REMATCH[2]}"
+        [ "$have_ver" = "$GOLANGCI_LINT_WANT" ] || return 0
+        # vazio → sort printed nothing; falhou/ilegível → sort -V missing: oldest is empty, so no match (go run fallback)
+        oldest=$(printf '%s\n%s\n' "$mod_go" "$built_go" | sort -V | sed -n 1p) || oldest=""
+        [ "$oldest" = "$mod_go" ] || return 0   # built_go older than go.mod's directive
+        echo "$bin"
+    }
+
+    HEAVY_GUARD="${GC_CITY_PATH:-/Users/athos/gt/.gascity-gastown-hq}/scripts/heavy-guard.sh"
+    if [ ! -x "$HEAVY_GUARD" ]; then
+        # No guard on this machine (CI, a laptop outside the city): skip, loudly. CI still lints.
+        echo >&2 "pre-commit: golangci-lint SKIPPED — heavy-guard not found at $HEAVY_GUARD, so the free disk was not checked. CI still lints; set GC_CITY_PATH to the city to lint here."
+    else
+        # vazio → no usable pre-built linter (go run fallback); falhou → same (the function never fails)
+        lint_bin=$(pinned_lint_bin) || lint_bin=""
+        # Lint changed code with auto-fix; block on remaining issues.
+        # CGO_ENABLED=0 avoids typecheck failures from CGO-only dependencies
+        # (e.g., dolthub/go-icu-regex) that require system headers not always present.
+        # --max-disk-drop-mb: the watch stops the step when the free disk falls that much while it runs.
+        # 2048 MB (pre-built) is below the 2.3 GB the 31/10 incident lost while also compiling the
+        # linter; a cold typecheck that hits it is stopped (78) and keeps what it already cached for the retry.
+        if [ -n "$lint_bin" ]; then
+            CGO_ENABLED=0 "$HEAVY_GUARD" --what "pre-commit golangci-lint" --max-disk-drop-mb 2048 -- \
+                "$lint_bin" run --new-from-rev=HEAD --fix || exit $?
+        else
+            CGO_ENABLED=0 "$HEAVY_GUARD" --what "go-build golangci-lint" --max-disk-drop-mb 6144 -- \
+                $GOLANGCI_LINT run --new-from-rev=HEAD --fix || exit $?
+        fi
+    fi
 
     # Re-stage any auto-fixes from the linter
     echo "$staged_go_files" | xargs git add
